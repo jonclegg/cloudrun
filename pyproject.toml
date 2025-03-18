@@ -22,6 +22,14 @@ dev = [
     "pytest-mock>=3.10.0",
 ]
 
+[project.scripts]
+cloudrun = "cloudrun.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cloudrun*"]
+namespaces = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"] 
