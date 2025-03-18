@@ -17,7 +17,8 @@ def run(
     script_path: str,
     vcpus: float = 0.25,
     memory: int = 512,
-    use_spot: bool = False
+    use_spot: bool = False,
+    log_group: Optional[str] = None
 ) -> str:
     """
     Run a Python script in the cloud.
@@ -27,6 +28,7 @@ def run(
         vcpus: Number of vCPUs to allocate (default: 0.25). Must be one of [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
         memory: Memory in MB to allocate (default: 512). Must follow Fargate's valid CPU/memory combinations
         use_spot: Whether to use spot instances (default: False)
+        log_group: Optional custom CloudWatch log group name (default: None, uses default log group)
     
     Returns:
         str: Job ID for tracking the execution
@@ -122,7 +124,15 @@ def run(
             'memory': str(memory),
             'containerOverrides': [{
                 'name': 'cloudrun-executor',
-                'command': [bucket_name, s3_key, script_path]
+                'command': [bucket_name, s3_key, script_path],
+                'logConfiguration': {
+                    'logDriver': 'awslogs',
+                    'options': {
+                        'awslogs-group': log_group if log_group else '/ecs/cloudrun-cluster',
+                        'awslogs-region': region,
+                        'awslogs-stream-prefix': 'ecs'
+                    }
+                }
             }]
         }
     }
