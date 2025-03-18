@@ -27,7 +27,7 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-echo -e "${GREEN}Starting build process for aws-cloudrun...${NC}"
+echo -e "${GREEN}Starting build process for cloudrun...${NC}"
 
 # Ensure we're in a clean virtual environment
 echo -e "\n${GREEN}Setting up virtual environment...${NC}"
