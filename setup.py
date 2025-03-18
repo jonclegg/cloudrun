@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="cloudrun",
+    name="aws-cloudrun",
     version="0.1.0",
     author="Jon Clegg",
     author_email="jonclegg@gmail.com",
@@ -25,7 +25,15 @@ setup(
     install_requires=[
         "boto3>=1.26.0",
         "python-dotenv>=0.19.0",
+        "click>=8.0.0",
     ],
+    package_data={
+        'cloudrun': [
+            'docker/*',
+            'docker/requirements.txt',
+        ],
+    },
+    include_package_data=True,
     entry_points={
         'console_scripts': [
             'cloudrun=cloudrun.cli:cli',

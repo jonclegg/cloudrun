@@ -1,5 +1,6 @@
 import click
 import os
+import boto3
 from .setup import create_infrastructure
 
 @click.group()
@@ -9,29 +10,28 @@ def cli():
 
 @cli.command()
 @click.option('--region', help='AWS region to use')
-def setup(region):
+@click.option('--profile', help='AWS profile to use')
+def setup(region, profile):
     """Initialize AWS infrastructure for CloudRun"""
-    if not os.getenv('AWS_ACCESS_KEY_ID') or not os.getenv('AWS_SECRET_ACCESS_KEY'):
-        click.echo("Error: AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
-        return
-    
     try:
+        # Configure AWS session with profile if provided
+        if profile:
+            session = boto3.Session(profile_name=profile)
+            # Set credentials for boto3 default session
+            credentials = session.get_credentials()
+            os.environ['AWS_ACCESS_KEY_ID'] = credentials.access_key
+            os.environ['AWS_SECRET_ACCESS_KEY'] = credentials.secret_key
+            if session.region_name:
+                os.environ['AWS_DEFAULT_REGION'] = session.region_name
+        
+        # Create infrastructure
         resources = create_infrastructure(region)
         
-        # Create or update .env file with resource information
-        env_vars = {
-            'CLOUDRUN_BUCKET_NAME': resources['bucket_name'],
-            'CLOUDRUN_CLUSTER_ARN': resources['cluster_arn'],
-            'CLOUDRUN_TASK_ROLE_ARN': resources['task_role_arn'],
-            'CLOUDRUN_REPOSITORY_URI': resources['repository_uri']
-        }
-        
-        with open('.env', 'a') as f:
-            f.write('\n# CloudRun Resources\n')
-            for key, value in env_vars.items():
-                f.write(f'{key}={value}\n')
-        
-        click.echo("\nEnvironment variables have been added to .env file")
-        
+        click.echo("\nInfrastructure setup complete!")
+        click.echo("\nResource Summary:")
+        for key, value in resources.items():
+            click.echo(f"{key}: {value}")
+            
     except Exception as e:
-        click.echo(f"Error: {str(e)}") 
+        click.echo(f"Error: {str(e)}", err=True)
+        raise 

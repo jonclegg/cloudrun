@@ -2,6 +2,8 @@ import os
 import boto3
 import json
 import subprocess
+import shutil
+import tempfile
 from typing import Dict, Tuple
 from pathlib import Path
 from dotenv import load_dotenv, set_key
@@ -92,18 +94,33 @@ def setup_ecr_repository(ecr_client) -> str:
         repo = ecr_client.describe_repositories(repositoryNames=[repo_name])['repositories'][0]
         return repo['repositoryUri']
 
-def build_and_push_image(ecr_client, repository_uri: str, region: str) -> str:
+def get_package_docker_path() -> Path:
+    """Get the path to the Docker files in the package."""
+    return Path(__file__).parent / 'docker'
+
+def prepare_docker_build(temp_dir: Path) -> Path:
     """
-    Build and push Docker image to ECR.
+    Prepare Docker build context in a temporary directory.
     
     Args:
-        ecr_client: Boto3 ECR client
-        repository_uri: URI of the ECR repository
-        region: AWS region
+        temp_dir: Temporary directory to use
     
     Returns:
-        str: Full image URI
+        Path to the Docker build context
     """
+    docker_path = get_package_docker_path()
+    build_dir = temp_dir / 'docker_build'
+    build_dir.mkdir(exist_ok=True)
+    
+    # Copy Docker files to build directory
+    shutil.copy2(docker_path / 'Dockerfile', build_dir / 'Dockerfile')
+    shutil.copy2(docker_path / 'entrypoint.sh', build_dir / 'entrypoint.sh')
+    shutil.copy2(docker_path / 'requirements.txt', build_dir / 'requirements.txt')
+    
+    return build_dir
+
+def build_and_push_image(ecr_client, repository_uri: str, region: str) -> str:
+    """Build and push Docker image to ECR."""
     try:
         # Get AWS account ID
         sts = boto3.client('sts', region_name=region)
@@ -115,17 +132,21 @@ def build_and_push_image(ecr_client, repository_uri: str, region: str) -> str:
         print("\nBuilding and pushing Docker image...")
         print(f"ECR URI: {ecr_uri}")
         
-        # Get ECR login password and login
-        login_cmd = f"aws ecr get-login-password --region {region} | docker login --username AWS --password-stdin {ecr_uri}"
-        subprocess.run(login_cmd, shell=True, check=True)
-        
-        # Build with platform specification
-        build_cmd = f"docker build --platform linux/amd64 -t {ecr_uri} . -f Dockerfile"
-        subprocess.run(build_cmd, shell=True, check=True)
-        
-        # Push the image
-        push_cmd = f"docker push {ecr_uri}"
-        subprocess.run(push_cmd, shell=True, check=True)
+        # Create temporary build context
+        with tempfile.TemporaryDirectory() as temp_dir:
+            build_dir = prepare_docker_build(Path(temp_dir))
+            
+            # Get ECR login password and login
+            login_cmd = f"aws ecr get-login-password --region {region} | docker login --username AWS --password-stdin {ecr_uri}"
+            subprocess.run(login_cmd, shell=True, check=True, cwd=str(build_dir))
+            
+            # Build with platform specification
+            build_cmd = f"docker build --platform linux/amd64 -t {ecr_uri} ."
+            subprocess.run(build_cmd, shell=True, check=True, cwd=str(build_dir))
+            
+            # Push the image
+            push_cmd = f"docker push {ecr_uri}"
+            subprocess.run(push_cmd, shell=True, check=True)
         
         return f"{ecr_uri}:latest"
         
@@ -227,6 +248,7 @@ def create_task_definition(ecs_client, task_role_arn: str, image_uri: str, regio
 def create_infrastructure(region: str = None) -> Dict[str, str]:
     """
     Creates all required AWS infrastructure for CloudRun.
+    Uses default AWS credentials from environment, config file, or IAM role.
     
     Args:
         region: AWS region to use (defaults to AWS_DEFAULT_REGION or 'us-east-1')
@@ -242,11 +264,14 @@ def create_infrastructure(region: str = None) -> Dict[str, str]:
 
     region = region or os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
     
-    # Initialize AWS clients
-    iam = boto3.client('iam', region_name=region)
-    s3 = boto3.client('s3', region_name=region)
-    ecs = boto3.client('ecs', region_name=region)
-    ecr = boto3.client('ecr', region_name=region)
+    # Use the default session (which will use the profile if set earlier)
+    session = boto3.Session(region_name=region)
+    
+    # Initialize AWS clients with the session
+    iam = session.client('iam')
+    s3 = session.client('s3')
+    ecs = session.client('ecs')
+    ecr = session.client('ecr')
     
     resources = {}
     
@@ -271,9 +296,6 @@ def create_infrastructure(region: str = None) -> Dict[str, str]:
     
     # Save configuration
     save_configuration(resources, region)
-    
-    print("\nInfrastructure setup complete!")
-    print(f"Docker image pushed to: {resources['image_uri']}")
     
     return resources
 

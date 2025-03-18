@@ -1,5 +1,7 @@
 import time
 import os
+from cloudrun.setup import create_infrastructure
+from cloudrun import run
 
 def main():
     print("Starting test script...")
@@ -12,5 +14,3 @@ def main():
     
     print("Test completed successfully!")
 
-if __name__ == "__main__":
-    main() 
