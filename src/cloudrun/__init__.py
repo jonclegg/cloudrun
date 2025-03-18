@@ -18,7 +18,8 @@ def run(
     vcpus: float = 0.25,
     memory: int = 512,
     use_spot: bool = False,
-    log_group: Optional[str] = None
+    log_group: Optional[str] = None,
+    exclude_paths: Optional[list[str]] = None
 ) -> str:
     """
     Run a Python script in the cloud.
@@ -29,6 +30,7 @@ def run(
         memory: Memory in MB to allocate (default: 512). Must follow Fargate's valid CPU/memory combinations
         use_spot: Whether to use spot instances (default: False)
         log_group: Optional custom CloudWatch log group name (default: None, uses default log group)
+        exclude_paths: List of path patterns to exclude from the zip file (default: None)
     
     Returns:
         str: Job ID for tracking the execution
@@ -76,13 +78,25 @@ def run(
     s3 = boto3.client('s3', region_name=region)
     ecs = boto3.client('ecs', region_name=region)
     
+    # Default exclude patterns
+    default_excludes = {'.venv/', 'venv/', '__pycache__/', '*.pyc'}
+    if exclude_paths:
+        default_excludes.update(exclude_paths)
+
     # Create a temporary zip file
     zip_path = Path('temp.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk('.'):
+            # Check if the current directory should be excluded
+            if any(pattern in root for pattern in default_excludes):
+                continue
+                
             for file in files:
                 if file != 'temp.zip' and not file.startswith('.'):
                     file_path = os.path.join(root, file)
+                    # Skip files matching exclude patterns
+                    if any(pattern in file_path for pattern in default_excludes):
+                        continue
                     arcname = os.path.relpath(file_path, '.')
                     zipf.write(file_path, arcname)
     
