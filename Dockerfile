@@ -9,7 +9,7 @@ RUN apt-get update && \
     unzip awscliv2.zip && \
     ./aws/install && \
     rm -rf awscliv2.zip aws && \
-    apt-get remove -y curl unzip && \
+    apt-get remove -y curl && \
     apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

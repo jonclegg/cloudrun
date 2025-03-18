@@ -47,11 +47,14 @@ def create_iam_role(iam_client) -> str:
             })
         )
         
+        # Attach required policies
         policies = [
             'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy',
-            'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess'
+            'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess',
+            'arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'  # Add CloudWatch Logs access
         ]
         for policy in policies:
+            print(f"Attaching policy: {policy}")
             iam_client.attach_role_policy(
                 RoleName=role_name,
                 PolicyArn=policy
@@ -180,6 +183,16 @@ def create_task_definition(ecs_client, task_role_arn: str, image_uri: str, regio
     Returns:
         str: Task definition ARN
     """
+    # Create CloudWatch log group first
+    logs_client = boto3.client('logs', region_name=region)
+    log_group_name = '/cloudrun/tasks'
+    
+    try:
+        print(f"Creating CloudWatch log group: {log_group_name}")
+        logs_client.create_log_group(logGroupName=log_group_name)
+    except logs_client.exceptions.ResourceAlreadyExistsException:
+        print(f"Log group {log_group_name} already exists")
+
     task_definition_name = 'cloudrun-task'
     
     try:
@@ -199,7 +212,7 @@ def create_task_definition(ecs_client, task_role_arn: str, image_uri: str, regio
                     'logConfiguration': {
                         'logDriver': 'awslogs',
                         'options': {
-                            'awslogs-group': '/cloudrun/tasks',
+                            'awslogs-group': log_group_name,
                             'awslogs-region': region,
                             'awslogs-stream-prefix': 'cloudrun'
                         }

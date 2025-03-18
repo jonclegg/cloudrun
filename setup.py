@@ -6,12 +6,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="cloudrun",
     version="0.1.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Jon Clegg",
+    author_email="jonclegg@gmail.com",
     description="Run Python code in AWS cloud using Fargate containers",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/cloudrun",
+    url="https://github.com/jonclegg/cloudrun",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",

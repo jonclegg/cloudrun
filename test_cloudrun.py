@@ -7,7 +7,7 @@ def test_cloud_run():
     
     print("Starting cloud run test...")
     
-    # cloudrun.create_infrastructure()
+    cloudrun.create_infrastructure()
 
     # Run the test script in the cloud
     script_path = "src/test.py"

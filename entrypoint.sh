@@ -27,3 +27,6 @@ cd /app/code
 # Run the specified Python script
 echo "Running script: ${SCRIPT_PATH}"
 python "${SCRIPT_PATH}" 
+
+# Run the specified Python script
+echo "Script completed"
