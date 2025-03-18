@@ -20,12 +20,16 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment
+# Virtual Environment
 .env
 .venv
 env/
 venv/
 ENV/
+env.bak/
+venv.bak/
+test_env/
+test_venv/
 
 # IDE
 .idea/
@@ -33,5 +37,13 @@ ENV/
 *.swp
 *.swo
 
-# Project specific
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.benchmarks/
+
+# Misc
+.DS_Store
+*.log
 temp.zip 
