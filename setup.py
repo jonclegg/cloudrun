@@ -12,7 +12,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/jonclegg/cloudrun",
-    packages=find_packages() + ['cloudrun.docker'],
+    packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
@@ -30,7 +30,6 @@ setup(
     package_data={
         'cloudrun': [
             'docker/*',
-            'docker/requirements.txt',
         ],
     },
     include_package_data=True,
