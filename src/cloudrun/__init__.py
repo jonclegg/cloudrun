@@ -138,16 +138,16 @@ def run(
             'memory': str(memory),
             'containerOverrides': [{
                 'name': 'cloudrun-executor',
-                'command': [bucket_name, s3_key, script_path],
-                'logConfiguration': {
-                    'logDriver': 'awslogs',
-                    'options': {
-                        'awslogs-group': log_group if log_group else '/ecs/cloudrun-cluster',
-                        'awslogs-region': region,
-                        'awslogs-stream-prefix': 'ecs'
-                    }
-                }
+                'command': [bucket_name, s3_key, script_path]
             }]
+        },
+        'logConfiguration': {
+            'logDriver': 'awslogs',
+            'options': {
+                'awslogs-group': log_group if log_group else '/ecs/cloudrun-cluster',
+                'awslogs-region': region,
+                'awslogs-stream-prefix': 'ecs'
+            }
         }
     }
     
