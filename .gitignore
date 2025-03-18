@@ -20,7 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Environment
 .env
 .venv
 env/
@@ -32,10 +32,6 @@ ENV/
 .vscode/
 *.swp
 *.swo
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Project specific
 temp.zip 

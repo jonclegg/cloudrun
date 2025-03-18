@@ -2,14 +2,14 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
-from aws_cloudrun import run
+from cloudrun import run
 
 @pytest.fixture
 def mock_aws():
     """Mock AWS services and environment setup"""
     with patch('boto3.client') as mock_boto, \
-         patch('aws_cloudrun.check_initialization', return_value=True), \
-         patch('aws_cloudrun.ensure_infrastructure', return_value=('test-bucket', 'test-role-arn')), \
+         patch('cloudrun.check_initialization', return_value=True), \
+         patch('cloudrun.ensure_infrastructure', return_value=('test-bucket', 'test-role-arn')), \
          patch.dict(os.environ, {
              'CLOUDRUN_REGION': 'us-east-1',
              'CLOUDRUN_SUBNET_ID': 'subnet-123',

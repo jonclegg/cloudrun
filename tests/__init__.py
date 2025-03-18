@@ -1,1 +1,1 @@
-"""Test suite for aws-cloudrun package.""" 
+"""Test suite for cloudrun package.""" 
