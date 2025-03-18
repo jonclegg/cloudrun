@@ -5,7 +5,7 @@ from .setup import create_infrastructure
 
 @click.group()
 def cli():
-    """CloudRun CLI tools"""
+    """CloudRun CLI tools 1.0"""
     pass
 
 @cli.command()
