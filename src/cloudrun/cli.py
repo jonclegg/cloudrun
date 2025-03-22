@@ -139,6 +139,23 @@ def setup(region):
         raise
 
 @cli.command()
+def destroy():
+    """Destroy all AWS infrastructure created by CloudRun"""
+    try:
+        # Import here to avoid circular imports
+        from .setup import destroy_infrastructure
+        
+        if click.confirm('Are you sure you want to destroy all CloudRun infrastructure? This action cannot be undone.'):
+            destroy_infrastructure()
+            click.echo("\nInfrastructure destroyed successfully!")
+        else:
+            click.echo("\nOperation cancelled.")
+            
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        raise
+
+@cli.command()
 @click.option('--log-group', required=True, help='CloudWatch log group name')
 @click.option('--hours', default=1, help='Number of hours of logs to fetch (default: 1)')
 @click.option('--filter', help='Filter pattern to apply to the logs')

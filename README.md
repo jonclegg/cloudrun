@@ -34,7 +34,15 @@ This will create:
 - ECR repository
 - VPC and networking components
 
-2. Run a Python script:
+2. Destroy AWS infrastructure:
+
+```bash
+cloudrun destroy
+```
+
+This will remove all CloudRun infrastructure. You will be prompted for confirmation before proceeding.
+
+3. Run a Python script:
 
 ```python
 from cloudrun import run
@@ -59,8 +67,39 @@ CloudRun uses the following environment variables:
 - `CLOUDRUN_BUCKET_NAME`: S3 bucket name for script uploads
 - `CLOUDRUN_SUBNET_ID`: Subnet ID for ECS tasks
 - `CLOUDRUN_TASK_DEFINITION_ARN`: ECS task definition ARN
+- `CLOUDRUN_LOG_GROUP`: CloudWatch log group name (default: /ecs/cloudrun)
 
 These are automatically set when running `cloudrun setup`.
+
+### Logging
+
+CloudRun provides a pre-configured logger that automatically sends logs to CloudWatch. You can use it in your scripts like this:
+
+```python
+from cloudrun.logger import get_logger
+
+# Get a logger instance
+logger = get_logger(__name__)
+
+# Use the logger
+logger.info("Starting job...")
+logger.debug("Processing data...")
+logger.error("An error occurred")
+```
+
+The logger will automatically:
+- Create the log group if it doesn't exist
+- Send logs to CloudWatch with proper timestamps and formatting
+- Use the log group specified in the `run()` function or environment variable
+
+You can specify a custom log group when running your script:
+
+```python
+job_id = run(
+    script_path="your_script.py",
+    log_group="/custom/log/group"  # Optional: Custom CloudWatch log group
+)
+```
 
 ## Development
 

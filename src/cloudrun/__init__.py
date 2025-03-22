@@ -18,8 +18,8 @@ def run(
     vcpus: float = 0.25,
     memory: int = 512,
     use_spot: bool = False,
-    log_group: Optional[str] = None,
-    exclude_paths: Optional[list[str]] = None
+    exclude_paths: Optional[list[str]] = None,
+    verbose: bool = False
 ) -> str:
     """
     Run a Python script in the cloud.
@@ -29,7 +29,6 @@ def run(
         vcpus: Number of vCPUs to allocate (default: 0.25). Must be one of [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
         memory: Memory in MB to allocate (default: 512). Must follow Fargate's valid CPU/memory combinations
         use_spot: Whether to use spot instances (default: False)
-        log_group: Optional custom CloudWatch log group name (default: None, uses default log group)
         exclude_paths: List of path patterns to exclude from the zip file (default: None)
     
     Returns:
@@ -79,7 +78,7 @@ def run(
     ecs = boto3.client('ecs', region_name=region)
     
     # Default exclude patterns
-    default_excludes = {'.venv/', 'venv/', '__pycache__/', '*.pyc'}
+    default_excludes = {'.venv/', 'venv/', '__pycache__/', '*.pyc', ".git/"}
     if exclude_paths:
         default_excludes.update(exclude_paths)
 
@@ -99,6 +98,9 @@ def run(
                         continue
                     arcname = os.path.relpath(file_path, '.')
                     zipf.write(file_path, arcname)
+                    if verbose:
+                        size = os.path.getsize(file_path)
+                        print(f"Added {file_path} to zip file {size}")
     
     # Upload to S3
     s3_key = f"jobs/{os.path.basename(script_path)}/{zip_path.name}"
@@ -140,14 +142,6 @@ def run(
                 'name': 'cloudrun-executor',
                 'command': [bucket_name, s3_key, script_path]
             }]
-        },
-        'logConfiguration': {
-            'logDriver': 'awslogs',
-            'options': {
-                'awslogs-group': log_group if log_group else '/ecs/cloudrun-cluster',
-                'awslogs-region': region,
-                'awslogs-stream-prefix': 'ecs'
-            }
         }
     }
     
@@ -160,7 +154,6 @@ def run(
     task = ecs.run_task(**task_params)
     
     return f"job-{task['tasks'][0]['taskArn'].split('/')[-1]}"
-
 # Import cli at the end to avoid circular imports
 from .cli import cli
 from .setup import create_infrastructure
