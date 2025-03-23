@@ -278,7 +278,7 @@ def destroy():
 @click.option('--filter', help='Filter pattern to apply to the logs')
 @click.option('--task-id', help='Filter logs by specific task ID')
 @click.option('--tail', is_flag=True, help='Con ftinuously tail the logs')
-@click.option('--show-stream', is_flag=True, default=True, help='Show stream name in output')
+@click.option('--show-stream', is_flag=True, default=False, help='Show stream name in output')
 def logs(log_group, hours, filter, task_id, tail, show_stream):
     """Fetch or tail logs from CloudWatch."""
     session = get_aws_session()
