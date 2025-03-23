@@ -22,10 +22,11 @@ def run(
     use_spot: bool = False,
     exclude_paths: Optional[list[str]] = None,
     verbose: bool = False,
-    params: Optional[Dict[str, Any]] = None
+    params: Optional[Dict[str, Any]] = None,
+    run_local: bool = False
 ) -> str:
     """
-    Run a Python script or method in the cloud.
+    Run a Python script or method in the cloud or locally.
     
     Args:
         script_path: Path to the Python script or module.method to run (e.g. "main.hello_world")
@@ -35,15 +36,16 @@ def run(
         exclude_paths: List of path patterns to exclude from the zip file (default: None)
         verbose: Whether to print verbose output (default: False)
         params: Dictionary of parameters to pass to the method (default: None)
+        run_local: Whether to run the script locally instead of in the cloud (default: False)
     
     Returns:
-        str: Job ID for tracking the execution
+        str: Job ID for tracking the execution (or 'local' if run_local is True)
     
     Raises:
-        RuntimeError: If CloudRun hasn't been initialized
+        RuntimeError: If CloudRun hasn't been initialized and run_local is False
         ValueError: If invalid vcpus or memory values are provided
     """
-    if not check_initialization():
+    if not check_initialization() and not run_local:
         raise RuntimeError(
             "\nCloudRun has not been initialized. "
             "Please run the following command first:\n\n"
@@ -52,6 +54,41 @@ def run(
             "This will create the necessary AWS resources and save the configuration."
         )
     
+    # Parse script path to determine if it's a module.method
+    if '.' in script_path:
+        module_path, method_name = script_path.rsplit('.', 1)
+        script_path = f"{module_path}.py"
+        if not os.path.exists(script_path):
+            raise FileNotFoundError(f"Module not found: {script_path}")
+    else:
+        if not os.path.exists(script_path):
+            raise FileNotFoundError(f"Script not found: {script_path}")
+        method_name = None
+
+    if run_local:
+        # Import the module dynamically
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("module", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        if method_name:
+            # If method name is provided, call the specific method
+            method = getattr(module, method_name)
+            if params:
+                result = method(params)
+            else:
+                result = method()
+        else:
+            # If no method name, just execute the script
+            if params:
+                # If params are provided, we need to modify the script's globals
+                for key, value in params.items():
+                    setattr(module, key, value)
+            result = None
+        
+        return "local"
+
     # Validate CPU and memory values based on Fargate requirements
     cpu_memory_combinations = {
         0.25: [512, 1024, 2048],  # 256 (.25 vCPU): 512MB, 1GB, 2GB
@@ -71,17 +108,6 @@ def run(
             f"For {vcpus} vCPUs, memory must be one of these values (in MB): "
             f"{cpu_memory_combinations[vcpus]}"
         )
-    
-    # Parse script path to determine if it's a module.method
-    if '.' in script_path:
-        module_path, method_name = script_path.rsplit('.', 1)
-        script_path = f"{module_path}.py"
-        if not os.path.exists(script_path):
-            raise FileNotFoundError(f"Module not found: {script_path}")
-    else:
-        if not os.path.exists(script_path):
-            raise FileNotFoundError(f"Script not found: {script_path}")
-        method_name = None
     
     # Get subnet ID from environment
     subnet_id = os.getenv('CLOUDRUN_SUBNET_ID')
