@@ -5,6 +5,8 @@ import sys
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from .infrastructure import create_infrastructure
+from .infrastructure import destroy_infrastructure
 
 def get_aws_session(profile: Optional[str] = None) -> boto3.Session:
     """Configure and return an AWS session with the given profile."""
@@ -123,9 +125,6 @@ def cli(ctx, profile):
 def setup(region):
     """Initialize AWS infrastructure for CloudRun"""
     try:
-        # Import here to avoid circular imports
-        from .setup import create_infrastructure
-        
         # Create infrastructure
         resources = create_infrastructure(region)
         
@@ -142,9 +141,6 @@ def setup(region):
 def destroy():
     """Destroy all AWS infrastructure created by CloudRun"""
     try:
-        # Import here to avoid circular imports
-        from .setup import destroy_infrastructure
-        
         if click.confirm('Are you sure you want to destroy all CloudRun infrastructure? This action cannot be undone.'):
             destroy_infrastructure()
             click.echo("\nInfrastructure destroyed successfully!")
