@@ -15,6 +15,10 @@ if [ -z "$BUCKET_NAME" ] || [ -z "$S3_KEY" ] || [ -z "$SCRIPT_PATH" ]; then
     exit 1
 fi
 
+# Log task ID information
+TASK_ID=${CLOUDRUN_TASK_ID:-"unknown"}
+echo "Starting CloudRun task with ID: $TASK_ID"
+
 # Download the zip file from S3
 echo "Downloading code from S3..."
 aws s3 cp "s3://${BUCKET_NAME}/${S3_KEY}" /app/code.zip
