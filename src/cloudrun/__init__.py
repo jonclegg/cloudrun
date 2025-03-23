@@ -3,8 +3,9 @@ import boto3
 import zipfile
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 from dotenv import load_dotenv
+import json
 
 def check_initialization() -> bool:
     """
@@ -20,17 +21,20 @@ def run(
     memory: int = 512,
     use_spot: bool = False,
     exclude_paths: Optional[list[str]] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    params: Optional[Dict[str, Any]] = None
 ) -> str:
     """
-    Run a Python script in the cloud.
+    Run a Python script or method in the cloud.
     
     Args:
-        script_path: Path to the Python script to run
+        script_path: Path to the Python script or module.method to run (e.g. "main.hello_world")
         vcpus: Number of vCPUs to allocate (default: 0.25). Must be one of [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
         memory: Memory in MB to allocate (default: 512). Must follow Fargate's valid CPU/memory combinations
         use_spot: Whether to use spot instances (default: False)
         exclude_paths: List of path patterns to exclude from the zip file (default: None)
+        verbose: Whether to print verbose output (default: False)
+        params: Dictionary of parameters to pass to the method (default: None)
     
     Returns:
         str: Job ID for tracking the execution
@@ -68,8 +72,16 @@ def run(
             f"{cpu_memory_combinations[vcpus]}"
         )
     
-    if not os.path.exists(script_path):
-        raise FileNotFoundError(f"Script not found: {script_path}")
+    # Parse script path to determine if it's a module.method
+    if '.' in script_path:
+        module_path, method_name = script_path.rsplit('.', 1)
+        script_path = f"{module_path}.py"
+        if not os.path.exists(script_path):
+            raise FileNotFoundError(f"Module not found: {script_path}")
+    else:
+        if not os.path.exists(script_path):
+            raise FileNotFoundError(f"Script not found: {script_path}")
+        method_name = None
     
     # Get subnet ID from environment
     subnet_id = os.getenv('CLOUDRUN_SUBNET_ID')
@@ -140,6 +152,13 @@ def run(
     # Convert vCPUs to Fargate CPU units
     cpu_units = str(int(vcpus * 1024))
     
+    # Prepare command arguments
+    command = [bucket_name, s3_key, script_path]
+    if method_name:
+        command.append(method_name)
+    if params:
+        command.append(json.dumps(params))
+    
     # Run the task with the configured task definition
     task_params = {
         'cluster': 'cloudrun-cluster',
@@ -156,7 +175,7 @@ def run(
             'memory': str(memory),
             'containerOverrides': [{
                 'name': 'cloudrun-executor',
-                'command': [bucket_name, s3_key, script_path]
+                'command': command
             }]
         }
     }
