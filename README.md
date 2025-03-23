@@ -9,54 +9,6 @@ Run Python scripts in AWS Fargate with ease.
 - Automatic infrastructure setup and management
 - Simple CLI interface
 
-### Scheduled Jobs
-
-CloudRun supports scheduling jobs to run at regular intervals. You can use cron or rate expressions to specify when jobs should run:
-
-```bash
-# Schedule a job to run every day at 8 AM UTC
-cloudrun schedule \
-  --file-method-path your_script.py \
-  --name daily-morning-job \
-  --schedule-expression "cron(0 8 * * ? *)" \
-  --description "Daily morning job to process data"
-
-# Schedule a job to run every 2 hours
-cloudrun schedule \
-  --file-method-path your_script.py \
-  --name every-2-hours \
-  --schedule-expression "rate(2 hours)" \
-  --description "Job that runs every 2 hours"
-
-# Schedule a job that calls a specific method
-cloudrun schedule \
-  --file-method-path your_script.process_data \
-  --name method-job \
-  --schedule-expression "rate(1 day)" \
-  --params '{"key": "value"}' \
-  --description "Job that calls a specific method with parameters"
-```
-
-When you schedule a job, CloudRun automatically:
-1. Packages your code into a zip file
-2. Uploads it to S3
-3. Creates an EventBridge rule with your schedule
-4. Sets up a Lambda function to launch an ECS task when triggered
-
-View scheduled jobs with:
-
-```bash
-cloudrun jobs
-```
-
-Delete a scheduled job with:
-
-```bash
-cloudrun delete-job --name your-job-name
-```
-
-See `examples/scheduled_job.md` for more detailed examples.
-
 ## Installation
 
 You can install CloudRun directly from GitHub:
@@ -67,41 +19,154 @@ pip install git+https://github.com/jonclegg/cloudrun.git
 
 ## Usage
 
-### Command Line Interface
+### Python API Examples
 
-1. Initialize AWS infrastructure:
-
-```bash
-cloudrun setup [--region REGION] [--profile PROFILE]
-```
-
-This will create:
-- S3 bucket for script uploads
-- IAM roles and policies
-- ECS cluster
-- ECR repository
-- VPC and networking components
-
-2. Destroy AWS infrastructure:
-
-```bash
-cloudrun destroy
-```
-
-This will remove all CloudRun infrastructure. You will be prompted for confirmation before proceeding.
-
-3. Run a Python script:
+Here are examples of how to use CloudRun in your Python code:
 
 ```python
 from cloudrun import run
+from cloudrun.infrastructure import create_infrastructure, destroy_infrastructure
+from cloudrun.scheduler import create_scheduled_job, list_scheduled_jobs, delete_scheduled_job
+from cloudrun.logger import get_logger
 
+# Set up CloudRun infrastructure (only needed once)
+resources = create_infrastructure(region="us-east-1")
+print(f"Infrastructure created: {resources}")
+
+# Get a logger that automatically sends logs to CloudWatch
+logger = get_logger(__name__)
+
+# Run a basic script
 job_id = run(
-    script_path="your_script.py",
-    vcpus=0.25,  # Optional: 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, or 16.0
-    memory=512,  # Optional: Memory in MB (must match Fargate requirements)
-    use_spot=False  # Optional: Use spot instances for cost savings
+    script_path="scripts/process_data.py",
+    vcpus=0.25,
+    memory=512
 )
-print(f"Job ID: {job_id}")
+print(f"Job started with ID: {job_id}")
+
+# Run a script with a specific function
+job_id = run(
+    script_path="scripts/analytics.process_data",  # Will call process_data() function in analytics.py
+    vcpus=1.0,
+    memory=1024,
+    use_spot=True,  # Use spot instances for cost savings (may be interrupted)
+    params={
+        "date": "2023-01-01",
+        "batch_size": 100
+    }
+)
+print(f"Job started with ID: {job_id}")
+
+# Schedule a job to run daily at 2 AM UTC
+job_arn = create_scheduled_job(
+    name="daily-data-processing",
+    file_method_path="scripts/analytics.process_data",
+    schedule_expression="cron(0 2 * * ? *)",
+    description="Daily data processing job",
+    vcpus=1.0,
+    memory=1024,
+    use_spot=True,
+    params={"mode": "daily"}
+)
+print(f"Scheduled job created: {job_arn}")
+
+# List all scheduled jobs
+jobs = list_scheduled_jobs()
+for job in jobs:
+    print(f"Job: {job['Name']}, Schedule: {job['ScheduleExpression']}")
+
+# Delete a scheduled job
+delete_scheduled_job("daily-data-processing")
+
+# Completely remove all CloudRun infrastructure when you're done
+destroy_infrastructure()
+```
+
+### Command Line Interface
+
+CloudRun provides a comprehensive CLI for managing your jobs and infrastructure.
+
+#### Setting Up Infrastructure
+
+```bash
+# Initialize AWS infrastructure in a specific region
+cloudrun setup --region us-west-2
+
+# Use a specific AWS profile
+cloudrun setup --profile development
+```
+
+#### Running Scripts
+
+The `run` module can be used in your Python script as shown in the Python examples above.
+
+#### Managing Scheduled Jobs
+
+```bash
+# Create a scheduled job that runs every day at 8 AM UTC
+cloudrun schedule create \
+  --file-method-path your_script.py \
+  --name daily-morning-job \
+  --schedule-expression "cron(0 8 * * ? *)" \
+  --description "Daily morning job to process data"
+
+# Create a job to run every 2 hours with 1 vCPU and 2GB memory
+cloudrun schedule create \
+  --file-method-path your_script.py \
+  --name every-2-hours \
+  --schedule-expression "rate(2 hours)" \
+  --description "Job that runs every 2 hours" \
+  --vcpus 1.0 \
+  --memory 2048
+
+# Schedule a job that calls a specific method with parameters
+cloudrun schedule create \
+  --file-method-path your_script.process_data \
+  --name method-job \
+  --schedule-expression "rate(1 day)" \
+  --params '{"key": "value", "date": "2023-01-01"}' \
+  --description "Job that calls a specific method with parameters" \
+  --use-spot
+```
+
+#### Listing Scheduled Jobs
+
+```bash
+# List all scheduled jobs
+cloudrun schedule list
+```
+
+#### Deleting Scheduled Jobs
+
+```bash
+# Delete a scheduled job
+cloudrun schedule delete --name daily-morning-job
+```
+
+#### Working with Logs
+
+```bash
+# Fetch the last hour of logs from the CloudRun log group
+cloudrun logs get --log-group /ecs/cloudrun --hours 1
+
+# Filter logs with a specific pattern
+cloudrun logs get --log-group /ecs/cloudrun --filter "ERROR"
+
+# Filter logs for a specific task
+cloudrun logs get --log-group /ecs/cloudrun --task-id your-task-id
+
+# Tail logs in real-time
+cloudrun logs get --log-group /ecs/cloudrun --tail
+
+# Show stream names in the log output
+cloudrun logs get --log-group /ecs/cloudrun --tail --show-stream
+```
+
+#### Destroying Infrastructure
+
+```bash
+# Remove all CloudRun infrastructure
+cloudrun destroy
 ```
 
 ### Environment Variables
@@ -118,6 +183,21 @@ CloudRun uses the following environment variables:
 - `CLOUDRUN_LOG_GROUP`: CloudWatch log group name (default: /ecs/cloudrun)
 
 These are automatically set when running `cloudrun setup`.
+
+### Scheduled Jobs Details
+
+When you schedule a job, CloudRun automatically:
+1. Packages your code into a zip file
+2. Uploads it to S3
+3. Creates an EventBridge rule with your schedule
+4. Sets up a Lambda function to launch an ECS task when triggered
+
+CloudRun supports two types of schedule expressions:
+
+1. **Cron Expressions**: `cron(0 8 * * ? *)` - Run at 8:00 AM UTC every day
+2. **Rate Expressions**: `rate(1 hour)` - Run every hour
+
+See `examples/scheduled_job.md` for more detailed examples.
 
 ### Logging
 
