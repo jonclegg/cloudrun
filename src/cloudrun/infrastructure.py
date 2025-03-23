@@ -893,18 +893,20 @@ def _delete_scheduled_jobs(region: str) -> None:
     events = boto3.client('events', region_name=region)
     lambda_client = boto3.client('lambda', region_name=region)
     
-    # Try to find all EventBridge rules with 'cloudrun' in their name
+    # Try to find all EventBridge rules with 'cloudrun-' in their name
     # This is a more general approach that doesn't depend on the Lambda function existing
     try:
         # List all rules first
         all_rules = events.list_rules()['Rules']
-        cloudrun_rules = [rule for rule in all_rules if 'cloudrun' in rule['Name'].lower()]
+        cloudrun_rules = [rule for rule in all_rules if 'cloudrun-' in rule['Name'].lower()]
         
         # If we found any cloudrun rules, delete them
         deleted_count = 0
         for rule in cloudrun_rules:
             rule_name = rule['Name']
-            print(f"Found CloudRun rule: {rule_name}")
+            # Don't expose the prefix in the logs
+            display_name = rule_name[9:] if rule_name.startswith('cloudrun-') else rule_name
+            print(f"Found scheduled job: {display_name}")
             
             try:
                 # Get all targets for this rule
@@ -917,17 +919,16 @@ def _delete_scheduled_jobs(region: str) -> None:
                         Rule=rule_name,
                         Ids=target_ids
                     )
-                    print(f"Removed {len(target_ids)} targets from rule {rule_name}")
                 
                 # Delete the rule
                 events.delete_rule(
                     Name=rule_name
                 )
-                print(f"Deleted EventBridge rule: {rule_name}")
+                print(f"Deleted scheduled job: {display_name}")
                 deleted_count += 1
                 
             except Exception as e:
-                print(f"Error deleting rule {rule_name}: {str(e)}")
+                print(f"Error deleting job {display_name}: {str(e)}")
                 
         # Now also try the original approach to catch any rules that don't have 'cloudrun' in name
         # but are targeting our Lambda function
@@ -949,6 +950,9 @@ def _delete_scheduled_jobs(region: str) -> None:
                     for target in targets:
                         if target['Arn'] == lambda_arn:
                             # Found a target pointing to our Lambda function
+                            # Don't expose the prefix in the logs
+                            display_name = rule_name[9:] if rule_name.startswith('cloudrun-') else rule_name
+                            
                             # Remove the target
                             events.remove_targets(
                                 Rule=rule_name,
@@ -960,19 +964,21 @@ def _delete_scheduled_jobs(region: str) -> None:
                                 Name=rule_name
                             )
                             
-                            print(f"Deleted rule with our Lambda target: {rule_name}")
+                            print(f"Deleted job: {display_name}")
                             deleted_count += 1
                             break
                 except Exception as e:
-                    print(f"Error checking targets for rule {rule_name}: {str(e)}")
+                    # Don't expose the prefix in the logs
+                    display_name = rule_name[9:] if rule_name.startswith('cloudrun-') else rule_name
+                    print(f"Error checking targets for job {display_name}: {str(e)}")
                     
         except lambda_client.exceptions.ResourceNotFoundException:
             print("Scheduler Lambda function not found, skipping Lambda-target specific cleanup")
             
         if deleted_count > 0:
-            print(f"Deleted {deleted_count} scheduled jobs/rules")
+            print(f"Deleted {deleted_count} scheduled jobs")
         else:
-            print("No CloudRun scheduled jobs/rules found")
+            print("No scheduled jobs found")
             
     except Exception as e:
         print(f"Error cleaning up scheduled jobs: {str(e)}")

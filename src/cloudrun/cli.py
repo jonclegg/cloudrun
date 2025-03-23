@@ -274,14 +274,19 @@ def destroy():
         click.echo(f"Error: {str(e)}", err=True)
         raise
 
-@cli.command()
+@cli.group()
+def logs():
+    """Manage CloudWatch logs"""
+    pass
+
+@logs.command(name='get')
 @click.option('--log-group', required=True, help='CloudWatch log group name')
 @click.option('--hours', default=1, help='Number of hours of logs to fetch (default: 1)')
 @click.option('--filter', help='Filter pattern to apply to the logs')
 @click.option('--task-id', help='Filter logs by specific task ID')
 @click.option('--tail', is_flag=True, help='Con ftinuously tail the logs')
 @click.option('--show-stream', is_flag=True, default=False, help='Show stream name in output')
-def logs(log_group, hours, filter, task_id, tail, show_stream):
+def get_logs(log_group, hours, filter, task_id, tail, show_stream):
     """Fetch or tail logs from CloudWatch."""
     session = get_aws_session()
     logs_client = session.client('logs')
@@ -307,7 +312,12 @@ def logs(log_group, hours, filter, task_id, tail, show_stream):
         
         fetch_historical_logs(logs_client, log_group, start_time, end_time, filter, task_id)
 
-@cli.command()
+@cli.group()
+def schedule():
+    """Manage scheduled jobs"""
+    pass
+
+@schedule.command(name='create')
 @click.option('--file-method-path', required=True, help='Path to the script or module.method to run (e.g. "script.py" or "script.process_data")')
 @click.option('--name', required=True, help='Name for the scheduled job')
 @click.option('--schedule-expression', required=True, 
@@ -317,7 +327,7 @@ def logs(log_group, hours, filter, task_id, tail, show_stream):
 @click.option('--memory', type=int, default=512, help='Memory in MB (default: 512)')
 @click.option('--use-spot', is_flag=True, help='Use spot instances (cheaper but may be interrupted)')
 @click.option('--params', type=str, help='JSON string of parameters to pass to the method')
-def schedule(file_method_path, name, schedule_expression, description, vcpus, memory, use_spot, params):
+def create_job(file_method_path, name, schedule_expression, description, vcpus, memory, use_spot, params):
     """Schedule a job to run at specified intervals."""
     try:
         # Parse params if provided
@@ -330,7 +340,6 @@ def schedule(file_method_path, name, schedule_expression, description, vcpus, me
                 sys.exit(1)
         
         # Create the scheduled job
-        original_name = name  # Store original name for display
         job_rule_arn = create_scheduled_job(
             name=name,
             file_method_path=file_method_path,
@@ -342,11 +351,8 @@ def schedule(file_method_path, name, schedule_expression, description, vcpus, me
             params=params_dict
         )
         
-        # Get the complete name (may have prefix added)
-        full_name = f"cloudrun-{original_name}" if not original_name.startswith("cloudrun-") else original_name
-        
         click.echo(f"\nJob scheduled successfully!")
-        click.echo(f"Job name: {full_name}")
+        click.echo(f"Job name: {name}")
         click.echo(f"File/method: {file_method_path}")
         click.echo(f"Schedule: {schedule_expression}")
         click.echo(f"Rule ARN: {job_rule_arn}")
@@ -355,8 +361,8 @@ def schedule(file_method_path, name, schedule_expression, description, vcpus, me
         click.echo(f"Error scheduling job: {str(e)}", err=True)
         sys.exit(1)
 
-@cli.command()
-def jobs():
+@schedule.command(name='list')
+def list_jobs():
     """List all scheduled jobs."""
     try:
         jobs = list_scheduled_jobs()
@@ -370,13 +376,7 @@ def jobs():
         
         for job in jobs:
             name = job['Name']
-            # Display the name, showing the prefix for awareness but highlighting the user-provided part
-            if name.startswith('cloudrun-'):
-                display_name = f"{name} (prefix: cloudrun-)"
-            else:
-                display_name = name
-                
-            click.echo(f"Name: {display_name}")
+            click.echo(f"Name: {name}")
             click.echo(f"Description: {job['Description']}")
             click.echo(f"Schedule: {job['ScheduleExpression']}")
             click.echo(f"State: {job['State']}")
@@ -387,26 +387,19 @@ def jobs():
         click.echo(f"Error listing jobs: {str(e)}", err=True)
         sys.exit(1)
 
-@cli.command()
+@schedule.command(name='delete')
 @click.option('--name', required=True, help='Name of the scheduled job to delete')
-def delete_job(name):
+def delete_scheduled_job_command(name):
     """Delete a scheduled job."""
     try:
-        # Store original name for display
-        original_name = name
-        
         if click.confirm(f'Are you sure you want to delete the scheduled job "{name}"?'):
             delete_scheduled_job(name)
-            
-            # Get the complete name that was actually used (may have prefix added)
-            full_name = f"cloudrun-{original_name}" if not original_name.startswith("cloudrun-") else original_name
-            
-            click.echo(f"\nJob '{full_name}' deleted successfully!")
+            click.echo(f"\nJob '{name}' deleted successfully!")
         else:
             click.echo("\nOperation cancelled.")
             
     except Exception as e:
-        click.echo(f"Error deleting job: {str(e)}", err=True)
+        click.echo(f"Error: {str(e)}", err=True)
         sys.exit(1)
 
 def main():

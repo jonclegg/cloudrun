@@ -116,10 +116,10 @@ def create_scheduled_job(
     events = _get_events_client()
     lambda_arn = _get_cloudrun_lambda_target()
     
-    # Ensure the job name starts with "cloudrun-" to make cleanup easier
-    if not name.startswith('cloudrun-'):
-        name = f"cloudrun-{name}"
-        print(f"Job name prefixed with 'cloudrun-' for easier management: {name}")
+    # Ensure the job name starts with "cloudrun-" internally
+    internal_name = name
+    if not internal_name.startswith('cloudrun-'):
+        internal_name = f"cloudrun-{name}"
     
     # Parse file_method_path to extract script_path and method_name
     if '.' in file_method_path and not file_method_path.endswith('.py'):
@@ -137,7 +137,7 @@ def create_scheduled_job(
     
     # Create the CloudWatch Events rule
     rule_response = events.put_rule(
-        Name=name,
+        Name=internal_name,
         ScheduleExpression=schedule_expression,
         State='ENABLED',
         Description=description
@@ -156,9 +156,9 @@ def create_scheduled_job(
     
     # Add the target to the rule
     events.put_targets(
-        Rule=name,
+        Rule=internal_name,
         Targets=[{
-            'Id': f'{name}-target',
+            'Id': f'{internal_name}-target',
             'Arn': lambda_arn,
             'Input': json.dumps(lambda_input)
         }]
@@ -174,7 +174,8 @@ def list_scheduled_jobs() -> List[Dict[str, Any]]:
     List all scheduled jobs.
     
     Returns:
-        List[Dict[str, Any]]: List of scheduled jobs
+        List[Dict[str, Any]]: List of scheduled jobs with the 'cloudrun-' prefix removed
+        from the Name field for better user experience.
     """
     events = _get_events_client()
     lambda_arn = _get_cloudrun_lambda_target()
@@ -184,17 +185,33 @@ def list_scheduled_jobs() -> List[Dict[str, Any]]:
         NamePrefix='cloudrun-'  # Filter to rules with our prefix
     )['Rules']
     
-    # For each rule, add target information if available
+    # For each rule, add target information if available and remove the prefix from the display name
     result = []
     for rule in rules:
         try:
             targets = events.list_targets_by_rule(Rule=rule['Name'])['Targets']
             rule['Targets'] = targets
+            
+            # Remove 'cloudrun-' prefix from name for display purposes
+            if rule['Name'].startswith('cloudrun-'):
+                # Store the original name for internal use if needed
+                rule['InternalName'] = rule['Name']
+                # Set the display name without prefix
+                rule['Name'] = rule['Name'][9:]  # 'cloudrun-' is 9 characters
+                
             result.append(rule)
         except Exception as e:
             # Include the rule even if we can't get target information
             rule['Targets'] = []
             rule['TargetError'] = str(e)
+            
+            # Remove 'cloudrun-' prefix from name for display purposes
+            if rule['Name'].startswith('cloudrun-'):
+                # Store the original name for internal use if needed
+                rule['InternalName'] = rule['Name']
+                # Set the display name without prefix
+                rule['Name'] = rule['Name'][9:]  # 'cloudrun-' is 9 characters
+                
             result.append(rule)
     
     return result
@@ -210,30 +227,28 @@ def delete_scheduled_job(name: str) -> None:
     """
     events = _get_events_client()
     
-    # Ensure name has the cloudrun- prefix
-    if not name.startswith('cloudrun-'):
-        name = f"cloudrun-{name}"
-        print(f"Looking for job with name: {name}")
+    # Ensure name has the cloudrun- prefix for internal use
+    internal_name = name
+    if not internal_name.startswith('cloudrun-'):
+        internal_name = f"cloudrun-{name}"
     
     try:
         # List targets for the rule
-        targets = events.list_targets_by_rule(Rule=name)['Targets']
+        targets = events.list_targets_by_rule(Rule=internal_name)['Targets']
         
         # Remove targets from the rule
         if targets:
             target_ids = [target['Id'] for target in targets]
             events.remove_targets(
-                Rule=name,
+                Rule=internal_name,
                 Ids=target_ids
             )
-            print(f"Removed {len(target_ids)} targets from rule {name}")
         
         # Delete the rule
         events.delete_rule(
-            Name=name
+            Name=internal_name
         )
-        print(f"Successfully deleted job: {name}")
     except events.exceptions.ResourceNotFoundException:
-        print(f"Job {name} not found")
+        raise ValueError(f"Job '{name}' not found")
     except Exception as e:
-        print(f"Error deleting job {name}: {str(e)}") 
+        raise RuntimeError(f"Error deleting job: {str(e)}") 
