@@ -38,7 +38,7 @@ COPY additional_requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/additional_requirements.txt && \
     rm /tmp/additional_requirements.txt
 
-    # Install the package
+# Install the package
 RUN pip install .
 
 ENTRYPOINT ["/entrypoint.sh"] 

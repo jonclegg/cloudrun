@@ -330,6 +330,7 @@ def schedule(file_method_path, name, schedule_expression, description, vcpus, me
                 sys.exit(1)
         
         # Create the scheduled job
+        original_name = name  # Store original name for display
         job_rule_arn = create_scheduled_job(
             name=name,
             file_method_path=file_method_path,
@@ -341,8 +342,11 @@ def schedule(file_method_path, name, schedule_expression, description, vcpus, me
             params=params_dict
         )
         
+        # Get the complete name (may have prefix added)
+        full_name = f"cloudrun-{original_name}" if not original_name.startswith("cloudrun-") else original_name
+        
         click.echo(f"\nJob scheduled successfully!")
-        click.echo(f"Job name: {name}")
+        click.echo(f"Job name: {full_name}")
         click.echo(f"File/method: {file_method_path}")
         click.echo(f"Schedule: {schedule_expression}")
         click.echo(f"Rule ARN: {job_rule_arn}")
@@ -365,7 +369,14 @@ def jobs():
         click.echo("=" * 80)
         
         for job in jobs:
-            click.echo(f"Name: {job['Name']}")
+            name = job['Name']
+            # Display the name, showing the prefix for awareness but highlighting the user-provided part
+            if name.startswith('cloudrun-'):
+                display_name = f"{name} (prefix: cloudrun-)"
+            else:
+                display_name = name
+                
+            click.echo(f"Name: {display_name}")
             click.echo(f"Description: {job['Description']}")
             click.echo(f"Schedule: {job['ScheduleExpression']}")
             click.echo(f"State: {job['State']}")
@@ -381,9 +392,16 @@ def jobs():
 def delete_job(name):
     """Delete a scheduled job."""
     try:
+        # Store original name for display
+        original_name = name
+        
         if click.confirm(f'Are you sure you want to delete the scheduled job "{name}"?'):
             delete_scheduled_job(name)
-            click.echo(f"\nJob '{name}' deleted successfully!")
+            
+            # Get the complete name that was actually used (may have prefix added)
+            full_name = f"cloudrun-{original_name}" if not original_name.startswith("cloudrun-") else original_name
+            
+            click.echo(f"\nJob '{full_name}' deleted successfully!")
         else:
             click.echo("\nOperation cancelled.")
             
