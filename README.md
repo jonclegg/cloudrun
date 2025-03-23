@@ -155,12 +155,20 @@ cloudrun logs get --log-group /ecs/cloudrun --filter "ERROR"
 # Filter logs for a specific task
 cloudrun logs get --log-group /ecs/cloudrun --task-id your-task-id
 
-# Tail logs in real-time
+# Tail logs in real-time (like 'tail -f')
 cloudrun logs get --log-group /ecs/cloudrun --tail
+
+# Tail logs with a filter pattern
+cloudrun logs get --log-group /ecs/cloudrun --tail --filter "ERROR"
+
+# Tail logs for a specific task
+cloudrun logs get --log-group /ecs/cloudrun --tail --task-id your-task-id
 
 # Show stream names in the log output
 cloudrun logs get --log-group /ecs/cloudrun --tail --show-stream
 ```
+
+CloudRun's log tailing feature works like `tail -f` on Linux/macOS, displaying new log entries as they arrive in real-time. This is especially useful when monitoring running jobs. Press Ctrl+C to stop tailing logs.
 
 #### Destroying Infrastructure
 
