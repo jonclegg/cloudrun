@@ -9,6 +9,54 @@ Run Python scripts in AWS Fargate with ease.
 - Automatic infrastructure setup and management
 - Simple CLI interface
 
+### Scheduled Jobs
+
+CloudRun supports scheduling jobs to run at regular intervals. You can use cron or rate expressions to specify when jobs should run:
+
+```bash
+# Schedule a job to run every day at 8 AM UTC
+cloudrun schedule \
+  --file-method-path your_script.py \
+  --name daily-morning-job \
+  --schedule-expression "cron(0 8 * * ? *)" \
+  --description "Daily morning job to process data"
+
+# Schedule a job to run every 2 hours
+cloudrun schedule \
+  --file-method-path your_script.py \
+  --name every-2-hours \
+  --schedule-expression "rate(2 hours)" \
+  --description "Job that runs every 2 hours"
+
+# Schedule a job that calls a specific method
+cloudrun schedule \
+  --file-method-path your_script.process_data \
+  --name method-job \
+  --schedule-expression "rate(1 day)" \
+  --params '{"key": "value"}' \
+  --description "Job that calls a specific method with parameters"
+```
+
+When you schedule a job, CloudRun automatically:
+1. Packages your code into a zip file
+2. Uploads it to S3
+3. Creates an EventBridge rule with your schedule
+4. Sets up a Lambda function to launch an ECS task when triggered
+
+View scheduled jobs with:
+
+```bash
+cloudrun jobs
+```
+
+Delete a scheduled job with:
+
+```bash
+cloudrun delete-job --name your-job-name
+```
+
+See `examples/scheduled_job.md` for more detailed examples.
+
 ## Installation
 
 You can install CloudRun directly from GitHub:

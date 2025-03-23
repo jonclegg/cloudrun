@@ -4,11 +4,13 @@ import boto3
 import sys
 import time
 import re
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from botocore.exceptions import ClientError
 from .infrastructure import create_infrastructure
 from .infrastructure import destroy_infrastructure
+from .scheduler import create_scheduled_job, list_scheduled_jobs, delete_scheduled_job
 
 def get_aws_session(profile: Optional[str] = None) -> boto3.Session:
     """Configure and return an AWS session with the given profile."""
@@ -304,6 +306,90 @@ def logs(log_group, hours, filter, task_id, tail, show_stream):
             click.echo(f"Filtering to task ID: {task_id}")
         
         fetch_historical_logs(logs_client, log_group, start_time, end_time, filter, task_id)
+
+@cli.command()
+@click.option('--file-method-path', required=True, help='Path to the script or module.method to run (e.g. "script.py" or "script.process_data")')
+@click.option('--name', required=True, help='Name for the scheduled job')
+@click.option('--schedule-expression', required=True, 
+              help='Schedule expression (cron or rate expression, e.g. "cron(0 12 * * ? *)" or "rate(1 day)")')
+@click.option('--description', help='Description of the scheduled job')
+@click.option('--vcpus', type=float, default=0.25, help='Number of vCPUs (default: 0.25)')
+@click.option('--memory', type=int, default=512, help='Memory in MB (default: 512)')
+@click.option('--use-spot', is_flag=True, help='Use spot instances (cheaper but may be interrupted)')
+@click.option('--params', type=str, help='JSON string of parameters to pass to the method')
+def schedule(file_method_path, name, schedule_expression, description, vcpus, memory, use_spot, params):
+    """Schedule a job to run at specified intervals."""
+    try:
+        # Parse params if provided
+        params_dict = None
+        if params:
+            try:
+                params_dict = json.loads(params)
+            except json.JSONDecodeError:
+                click.echo("Error: Params must be a valid JSON string", err=True)
+                sys.exit(1)
+        
+        # Create the scheduled job
+        job_rule_arn = create_scheduled_job(
+            name=name,
+            file_method_path=file_method_path,
+            schedule_expression=schedule_expression,
+            description=description or f"Scheduled job for {file_method_path}",
+            vcpus=vcpus,
+            memory=memory,
+            use_spot=use_spot,
+            params=params_dict
+        )
+        
+        click.echo(f"\nJob scheduled successfully!")
+        click.echo(f"Job name: {name}")
+        click.echo(f"File/method: {file_method_path}")
+        click.echo(f"Schedule: {schedule_expression}")
+        click.echo(f"Rule ARN: {job_rule_arn}")
+        
+    except Exception as e:
+        click.echo(f"Error scheduling job: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+def jobs():
+    """List all scheduled jobs."""
+    try:
+        jobs = list_scheduled_jobs()
+        
+        if not jobs:
+            click.echo("No scheduled jobs found.")
+            return
+            
+        click.echo("\nScheduled Jobs:")
+        click.echo("=" * 80)
+        
+        for job in jobs:
+            click.echo(f"Name: {job['Name']}")
+            click.echo(f"Description: {job['Description']}")
+            click.echo(f"Schedule: {job['ScheduleExpression']}")
+            click.echo(f"State: {job['State']}")
+            click.echo(f"ARN: {job['Arn']}")
+            click.echo("=" * 80)
+            
+    except Exception as e:
+        click.echo(f"Error listing jobs: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+@click.option('--name', required=True, help='Name of the scheduled job to delete')
+def delete_job(name):
+    """Delete a scheduled job."""
+    try:
+        if click.confirm(f'Are you sure you want to delete the scheduled job "{name}"?'):
+            delete_scheduled_job(name)
+            click.echo(f"\nJob '{name}' deleted successfully!")
+        else:
+            click.echo("\nOperation cancelled.")
+            
+    except Exception as e:
+        click.echo(f"Error deleting job: {str(e)}", err=True)
+        sys.exit(1)
 
 def main():
     cli(obj={})
