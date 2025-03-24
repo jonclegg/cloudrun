@@ -7,7 +7,6 @@ setup(
     package_dir={"": "src"},
     install_requires=[
         "boto3>=1.26.0",
-        "python-dotenv>=0.19.0",
         "click>=8.0.0",
     ],
     entry_points={

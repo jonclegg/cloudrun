@@ -15,7 +15,7 @@ from .config import (
     get_config_value,
     set_config_value,
     validate_environment,
-    clear_environment
+    clear_environment,
 )
 from . import (
     set_region,
@@ -27,7 +27,15 @@ from . import (
     set_ecr_repo,
     set_cluster_name,
     set_scheduler_lambda_arn,
-    set_initialized
+    set_initialized,
+    get_bucket_name,
+    get_subnet_id,
+    get_vpc_id,
+    get_task_definition_arn,
+    get_region,
+    get_cluster_name,
+    get_task_role_arn,
+    check_initialization,
 )
 
 ###############################################################################
@@ -216,7 +224,8 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
             'cli.py',
             'logger.py',
             'infrastructure.py',
-            'scheduler.py'
+            'scheduler.py',
+            'config.py'
         ]
         
         for file in files_to_copy:
@@ -430,7 +439,7 @@ def _delete_iam_role(iam_client, env_name: str) -> None:
 def _delete_s3_bucket(s3_client, env_name: str) -> None:
     """Delete S3 bucket and its contents."""
     print(f"\nDeleting S3 bucket for environment '{env_name}'...")
-    bucket_name = get_config_value('CLOUDRUN_BUCKET_NAME', env_name, f'cloudrun-{env_name}-{os.getenv("AWS_DEFAULT_REGION", "us-east-1")}-{os.getenv("USER", "default")}')
+    bucket_name = get_bucket_name(env_name)
     if bucket_name:
         try:
             print("Deleting bucket contents...")
@@ -809,10 +818,10 @@ def lambda_handler(event, context):
                         Description='CloudRun Scheduler Lambda Function',
                         Environment={
                             'Variables': {
-                                'CLOUDRUN_BUCKET_NAME': os.getenv('CLOUDRUN_BUCKET_NAME', ''),
-                                'CLOUDRUN_SUBNET_ID': os.getenv('CLOUDRUN_SUBNET_ID', ''),
-                                'CLOUDRUN_TASK_DEFINITION_ARN': os.getenv('CLOUDRUN_TASK_DEFINITION_ARN', ''),
-                                'CLOUDRUN_REGION': os.getenv('CLOUDRUN_REGION', 'us-east-1')
+                                'CLOUDRUN_BUCKET_NAME': get_bucket_name(env_name),
+                                'CLOUDRUN_SUBNET_ID': get_subnet_id(env_name),
+                                'CLOUDRUN_TASK_DEFINITION_ARN': get_task_definition_arn(env_name),
+                                'CLOUDRUN_REGION': get_region(env_name)
                             }
                         }
                     )
@@ -1056,6 +1065,42 @@ def _delete_scheduled_jobs(region: str, env_name: str) -> None:
 
 ###############################################################################
 
+def _check_infrastructure_changes(env_name: str, region: str, **kwargs) -> bool:
+    """
+    Check if infrastructure parameters have changed from what's stored in config.
+    
+    Args:
+        env_name: Name of the environment
+        region: AWS region
+        **kwargs: Additional infrastructure parameters
+        
+    Returns:
+        bool: True if parameters have changed, False otherwise
+    """
+    # Get current parameters
+    current_params = {
+        'CLOUDRUN_REGION': region,
+        'CLOUDRUN_ADDITIONAL_POLICIES': kwargs.get('additional_policies', []),
+        'CLOUDRUN_VPC_ID': kwargs.get('vpc_id'),
+        'CLOUDRUN_SUBNET_ID': kwargs.get('subnet_id'),
+        'CLOUDRUN_ADDITIONAL_REQUIREMENTS_TEXT': kwargs.get('additional_requirements_text'),
+        'CLOUDRUN_ADDITIONAL_REQUIREMENTS_PATH': kwargs.get('additional_requirements_path'),
+        'CLOUDRUN_CUSTOM_DOCKER_COMMANDS': kwargs.get('custom_docker_commands')
+    }
+    
+    # Compare parameters with stored values
+    for key, current_value in current_params.items():
+        stored_value = get_config_value(key, env_name)
+        if current_value != stored_value:
+            print(f"Infrastructure parameter '{key}' has changed:")
+            print(f"  Current: {current_value}")
+            print(f"  Stored: {stored_value}")
+            return True
+    
+    return False
+
+###############################################################################
+
 def create_infrastructure(env_name: str = 'default', region: str = None, **kwargs) -> Dict[str, Any]:
     """
     Initialize AWS infrastructure for CloudRun.
@@ -1076,32 +1121,32 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
         Dict[str, Any]: Dictionary containing created resource information
     """
     print(f"\n=== Starting CloudRun Infrastructure Creation for environment '{env_name}' ===")
-    load_dotenv()
     
     # Set region
     if region:
-        os.environ['AWS_DEFAULT_REGION'] = region
-    elif 'AWS_DEFAULT_REGION' not in os.environ:
-        os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+        set_region(region, env_name)
+    else:
+        region = get_config_value('CLOUDRUN_REGION', env_name, 'us-east-1')
+        set_region(region, env_name)
     
-    region = os.getenv('AWS_DEFAULT_REGION')
     print(f"Using AWS region: {region}")
-    set_region(region)
     
-    # Save settings for future use
-    settings = {
-        'region': region,
-        **kwargs
-    }
-    _save_infrastructure_settings(settings)
+    # Check if infrastructure parameters have changed
+    if check_initialization(env_name):
+        if not _check_infrastructure_changes(env_name, region, **kwargs):
+            print(f"Infrastructure parameters unchanged for environment '{env_name}', skipping creation.")
+        else:
+            print(f"Infrastructure parameters have changed for environment '{env_name}', destroying existing infrastructure...")
+            destroy_infrastructure(env_name)
     
     # Initialize AWS clients
     aws_clients = _initialize_aws_clients(region)
     
+    bucket_name = f"cloudrun-bucket-{env_name}-{region}"
+    set_bucket_name(bucket_name, env_name)
+
     # Create S3 bucket with environment name
-    bucket_name = get_config_value('CLOUDRUN_BUCKET_NAME', env_name, f'cloudrun-{env_name}-{region}-{os.getenv("USER", "default")}')
     _create_s3_bucket(aws_clients['s3'], bucket_name)
-    set_bucket_name(bucket_name)
 
     # Create CloudWatch log group
     _create_cloudwatch_log_group(aws_clients['logs'])
@@ -1157,9 +1202,15 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
         'CLOUDRUN_ECR_REPO': ecr_repo,
         'CLOUDRUN_CLUSTER_NAME': cluster_name,
         'CLOUDRUN_SCHEDULER_LAMBDA_ARN': lambda_function['Configuration']['FunctionArn'],
-        'CLOUDRUN_INITIALIZED': 'true'
+        # Store infrastructure parameters
+        'CLOUDRUN_ADDITIONAL_POLICIES': kwargs.get('additional_policies', []),
+        'CLOUDRUN_ADDITIONAL_REQUIREMENTS_TEXT': kwargs.get('additional_requirements_text'),
+        'CLOUDRUN_ADDITIONAL_REQUIREMENTS_PATH': kwargs.get('additional_requirements_path'),
+        'CLOUDRUN_CUSTOM_DOCKER_COMMANDS': kwargs.get('custom_docker_commands')
     }
-    _save_configuration(env_vars, env_name)
+    for key, value in env_vars.items():
+        set_config_value(key, value, env_name)
+    
     set_initialized(True, env_name)
     
     print(f"\n=== CloudRun Infrastructure Creation Complete for environment '{env_name}' ===")
@@ -1214,7 +1265,7 @@ def destroy_infrastructure(env_name: str = 'default') -> None:
         print("Lambda function not found or already deleted")
 
     # Clean up configuration
-    _cleanup_config(env_name)
+    clear_environment(env_name)
     
     print(f"\n=== CloudRun Infrastructure Destruction Complete for environment '{env_name}' ===")
 

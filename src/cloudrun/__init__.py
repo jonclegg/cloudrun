@@ -19,12 +19,12 @@ import time
 
 ###############################################################################
 
-def check_initialization() -> bool:
+def check_initialization(env_name: str = 'default') -> bool:
     """
     Checks if CloudRun has been initialized.
     Returns True if initialized, False otherwise.
     """
-    return get_config_value('CLOUDRUN_INITIALIZED') == 'true'
+    return get_config_value('CLOUDRUN_INITIALIZED', env_name) == True
 
 ###############################################################################
 
@@ -239,7 +239,7 @@ def _run_local(script_path: str, method_name: Optional[str], params: Optional[Di
 
 ###############################################################################
 
-def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], verbose: bool) -> str:
+def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], verbose: bool, env_name: str = 'default') -> str:
     """
     Creates a zip file of the project and uploads it to S3.
     
@@ -274,8 +274,8 @@ def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], 
                         print(f"Added {file_path} to zip file {size}")
     
     s3_key = f"jobs/{os.path.basename(script_path)}/{zip_path.name}"
-    s3 = boto3.client('s3', region_name=os.getenv('CLOUDRUN_REGION', 'us-east-1'))
-    s3.upload_file(str(zip_path), os.getenv('CLOUDRUN_BUCKET_NAME'), s3_key)
+    s3 = boto3.client('s3', region_name=get_region(env_name))
+    s3.upload_file(str(zip_path), get_bucket_name(env_name), s3_key)
     
     zip_path.unlink()
     return s3_key
@@ -289,7 +289,8 @@ def run_ecs_task(
     memory: int,
     method_name: Optional[str],
     params: Optional[Dict[str, Any]],
-    use_spot: bool
+    use_spot: bool,
+    env_name: str = 'default'
 ) -> str:
     """
     Runs a task on ECS Fargate.
@@ -302,12 +303,15 @@ def run_ecs_task(
         method_name: Optional method name to call
         params: Optional parameters to pass to the method
         use_spot: Whether to use spot instances
+        env_name: Name of the environment to use
     
     Returns:
         str: Job ID
     """
-    bucket_name = os.getenv('CLOUDRUN_BUCKET_NAME')
-    subnet_id = os.getenv('CLOUDRUN_SUBNET_ID')
+    bucket_name = get_config_value('CLOUDRUN_BUCKET_NAME', env_name)
+    subnet_id = get_config_value('CLOUDRUN_SUBNET_ID', env_name)
+    task_definition_arn = get_config_value('CLOUDRUN_TASK_DEFINITION_ARN', env_name)
+    region = get_config_value('CLOUDRUN_REGION', env_name, 'us-east-1')
     cpu_units = str(int(vcpus * 1024))
     
     # Generate a custom task ID with timestamp for uniqueness
@@ -320,8 +324,8 @@ def run_ecs_task(
         command.append(json.dumps(params))
     
     task_params = {
-        'cluster': 'cloudrun-cluster',
-        'taskDefinition': os.getenv('CLOUDRUN_TASK_DEFINITION_ARN'),
+        'cluster': get_config_value('CLOUDRUN_CLUSTER_NAME', env_name),
+        'taskDefinition': task_definition_arn,
         'networkConfiguration': {
             'awsvpcConfiguration': {
                 'subnets': [subnet_id],
@@ -352,7 +356,7 @@ def run_ecs_task(
     else:
         task_params['launchType'] = 'FARGATE'
     
-    ecs = boto3.client('ecs', region_name=os.getenv('CLOUDRUN_REGION', 'us-east-1'))
+    ecs = boto3.client('ecs', region_name=region)
     task = ecs.run_task(**task_params)
     
     # Return the custom task ID instead of the auto-generated ID
@@ -368,7 +372,8 @@ def run(
     exclude_paths: Optional[list[str]] = None,
     verbose: bool = False,
     params: Optional[Dict[str, Any]] = None,
-    run_local: bool = False
+    run_local: bool = False,
+    env_name: str = 'default'
 ) -> str:
     """
     Run a Python script or method in the cloud or locally.
@@ -382,6 +387,7 @@ def run(
         verbose: Whether to print verbose output (default: False)
         params: Dictionary of parameters to pass to the method (default: None)
         run_local: Whether to run the script locally instead of in the cloud (default: False)
+        env_name: Name of the environment to use (default: 'default')
     
     Returns:
         str: Job ID for tracking the execution (or 'local' if run_local is True)
@@ -390,7 +396,7 @@ def run(
         RuntimeError: If CloudRun hasn't been initialized and run_local is False
         ValueError: If invalid vcpus or memory values are provided
     """
-    if not check_initialization() and not run_local:
+    if not check_initialization(env_name) and not run_local:
         raise RuntimeError(
             "\nCloudRun has not been initialized. "
             "Please run the following command first:\n\n"
@@ -403,7 +409,6 @@ def run(
     if not '.' in script_path:
         raise ValueError("Script path must be a module.method (e.g. 'main.my_method')")
 
-
     module_path, method_name = script_path.rsplit('.', 1)
     script_path = f"{module_path}.py"
     if not os.path.exists(script_path):
@@ -413,10 +418,9 @@ def run(
         return _run_local(script_path, method_name, params)
 
     validate_cpu_memory(vcpus, memory)
-    validate_environment()
     
-    s3_key = create_and_upload_zip(script_path, exclude_paths, verbose)
-    return run_ecs_task(script_path, s3_key, vcpus, memory, method_name, params, use_spot)
+    s3_key = create_and_upload_zip(script_path, exclude_paths, verbose, env_name)
+    return run_ecs_task(script_path, s3_key, vcpus, memory, method_name, params, use_spot, env_name)
 
 ###############################################################################
 
