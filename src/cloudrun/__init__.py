@@ -134,7 +134,7 @@ def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], 
                 continue
                 
             for file in files:
-                if file != 'temp.zip' and not file.startswith('.'):
+                if file != 'temp.zip':
                     file_path = os.path.join(root, file)
                     if any(pattern in file_path for pattern in default_excludes):
                         continue
@@ -150,7 +150,6 @@ def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], 
     
     zip_path.unlink()
     return s3_key
-
 ###############################################################################
 
 def run_ecs_task(
@@ -182,7 +181,7 @@ def run_ecs_task(
     cpu_units = str(int(vcpus * 1024))
     
     # Generate a custom task ID with timestamp for uniqueness
-    custom_task_id = f"task-{int(time.time())}-{str(uuid.uuid4())[:8]}"
+    custom_task_id = f"cloudrun-{int(time.time())}-{str(uuid.uuid4())[:8]}"
     
     command = [bucket_name, s3_key, script_path]
     if method_name:

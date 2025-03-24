@@ -212,7 +212,44 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
         dockerfile_path = os.path.join(docker_dir_path, 'Dockerfile')
         if not os.path.exists(dockerfile_path):
             raise FileNotFoundError(f"Dockerfile not found at {dockerfile_path}")
-        shutil.copy2(dockerfile_path, temp_dir)
+        
+        # Check if we have custom Docker commands
+        custom_docker_commands = kwargs.get('custom_docker_commands')
+        if custom_docker_commands:
+            print("Adding custom Docker commands to Dockerfile...")
+            with open(dockerfile_path, 'r') as f:
+                dockerfile_content = f.read()
+            
+            # Find the position after the system dependencies installation but before additional requirements
+            # Look for the marker indicating where to insert custom commands - after base package installation
+            insertion_point = dockerfile_content.find("# Install additional requirements if they exist")
+            
+            if insertion_point == -1:
+                # Fallback to inserting before the last COPY command
+                insertion_point = dockerfile_content.rfind("COPY additional_requirements.txt")
+            
+            if insertion_point != -1:
+                # Insert custom commands
+                modified_dockerfile = (
+                    dockerfile_content[:insertion_point] + 
+                    "# Custom Docker commands\n" + 
+                    custom_docker_commands + 
+                    "\n\n" + 
+                    dockerfile_content[insertion_point:]
+                )
+                
+                # Write the modified Dockerfile
+                temp_dockerfile_path = os.path.join(temp_dir, 'Dockerfile')
+                with open(temp_dockerfile_path, 'w') as f:
+                    f.write(modified_dockerfile)
+                print("Created modified Dockerfile with custom commands")
+            else:
+                # If insertion point not found, just copy the original
+                shutil.copy2(dockerfile_path, temp_dir)
+                print("Warning: Could not find insertion point for custom Docker commands. Using original Dockerfile.")
+        else:
+            # No custom commands, just copy the original
+            shutil.copy2(dockerfile_path, temp_dir)
         
         print("Creating additional requirements file...")
         additional_requirements_path = kwargs.get('additional_requirements_path')
@@ -998,6 +1035,7 @@ def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
             - subnet_id: Optional subnet ID to use for ECS tasks
             - additional_requirements_text: Optional string containing additional Python package requirements
             - additional_requirements_path: Optional path to a requirements.txt file
+            - custom_docker_commands: Optional string containing custom Docker commands to insert into the Dockerfile
     
     Returns:
         Dict[str, Any]: Dictionary containing created resource information

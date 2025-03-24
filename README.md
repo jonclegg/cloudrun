@@ -33,6 +33,22 @@ from cloudrun.logger import get_logger
 resources = create_infrastructure(region="us-east-1")
 print(f"Infrastructure created: {resources}")
 
+# Set up infrastructure with custom Docker commands
+# This allows installing additional system packages or running custom commands in the Docker image
+resources = create_infrastructure(
+    region="us-east-1",
+    custom_docker_commands="""
+RUN apt-get update && apt-get install -y \\
+    postgresql-client \\
+    ffmpeg \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Install additional system tools
+RUN pip install --no-cache-dir \\
+    psycopg2-binary
+"""
+)
+
 # Get a logger that automatically sends logs to CloudWatch
 logger = get_logger(__name__)
 
@@ -94,6 +110,9 @@ cloudrun setup --region us-west-2
 
 # Use a specific AWS profile
 cloudrun setup --profile development
+
+# Set up with custom Docker commands to install additional packages
+cloudrun setup --region us-west-2 --custom-docker-commands "RUN apt-get update && apt-get install -y libpq-dev"
 ```
 
 #### Running Scripts

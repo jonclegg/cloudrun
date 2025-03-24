@@ -245,11 +245,15 @@ def cli(ctx, profile):
 
 @cli.command()
 @click.option('--region', help='AWS region to use')
-def setup(region):
+@click.option('--custom-docker-commands', help='Custom Docker commands to insert into the Dockerfile')
+def setup(region, custom_docker_commands):
     """Initialize AWS infrastructure for CloudRun"""
     try:
         # Create infrastructure
-        resources = create_infrastructure(region)
+        resources = create_infrastructure(
+            region=region,
+            custom_docker_commands=custom_docker_commands
+        )
         
         click.echo("\nInfrastructure setup complete!")
         click.echo("\nResource Summary:")
@@ -274,20 +278,15 @@ def destroy():
         click.echo(f"Error: {str(e)}", err=True)
         raise
 
-@cli.group()
-def logs():
-    """Manage CloudWatch logs"""
-    pass
-
-@logs.command(name='get')
+@cli.command()
 @click.option('--log-group', required=True, help='CloudWatch log group name')
 @click.option('--hours', default=1, help='Number of hours of logs to fetch (default: 1)')
 @click.option('--filter', help='Filter pattern to apply to the logs')
 @click.option('--task-id', help='Filter logs by specific task ID')
-@click.option('--tail', is_flag=True, help='Con ftinuously tail the logs')
+@click.option('--tail', is_flag=True, help='Continuously tail the logs')
 @click.option('--show-stream', is_flag=True, default=False, help='Show stream name in output')
-def get_logs(log_group, hours, filter, task_id, tail, show_stream):
-    """Fetch or tail logs from CloudWatch."""
+def logs(log_group, hours, filter, task_id, tail, show_stream):
+    """View logs from CloudWatch."""
     session = get_aws_session()
     logs_client = session.client('logs')
     
@@ -400,6 +399,107 @@ def delete_scheduled_job_command(name):
             
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.group()
+def tasks():
+    """Manage running tasks"""
+    pass
+
+@tasks.command(name='list')
+def list_tasks():
+    """List all running tasks."""
+    try:
+        session = get_aws_session()
+        ecs = session.client('ecs')
+        
+        # List tasks in the cluster
+        response = ecs.list_tasks(
+            cluster='cloudrun-cluster',
+            desiredStatus='RUNNING'
+        )
+        
+        if not response.get('taskArns'):
+            click.echo("No running tasks found.")
+            return
+            
+        # Get detailed task information
+        tasks = ecs.describe_tasks(
+            cluster='cloudrun-cluster',
+            tasks=response['taskArns']
+        )
+        
+        click.echo("\nRunning Tasks:")
+        click.echo("=" * 80)
+        
+        for task in tasks['tasks']:
+            # Get task ID from environment variables
+            task_id = next(
+                (env['value'] for env in task['overrides']['containerOverrides'][0]['environment']
+                 if env['name'] == 'CLOUDRUN_TASK_ID'),
+                'unknown'
+            )
+            
+            click.echo(f"Task ID: {task_id}")
+            click.echo(f"Task ARN: {task['taskArn']}")
+            click.echo(f"Status: {task['lastStatus']}")
+            click.echo(f"Started At: {task['startedAt']}")
+            click.echo("=" * 80)
+            
+    except Exception as e:
+        click.echo(f"Error listing tasks: {str(e)}", err=True)
+        sys.exit(1)
+
+@tasks.command(name='cancel')
+@click.option('--task-id', required=True, help='Task ID to cancel')
+def cancel_task(task_id):
+    """Cancel a running task."""
+    try:
+        session = get_aws_session()
+        ecs = session.client('ecs')
+        
+        # Find the task ARN by task ID
+        response = ecs.list_tasks(
+            cluster='cloudrun-cluster',
+            desiredStatus='RUNNING'
+        )
+        
+        if not response.get('taskArns'):
+            click.echo("No running tasks found.")
+            return
+            
+        # Get detailed task information
+        tasks = ecs.describe_tasks(
+            cluster='cloudrun-cluster',
+            tasks=response['taskArns']
+        )
+        
+        # Find task with matching task ID
+        target_task = None
+        for task in tasks['tasks']:
+            task_env_id = next(
+                (env['value'] for env in task['overrides']['containerOverrides'][0]['environment']
+                 if env['name'] == 'CLOUDRUN_TASK_ID'),
+                None
+            )
+            if task_env_id == task_id:
+                target_task = task
+                break
+                
+        if not target_task:
+            click.echo(f"Task with ID {task_id} not found.")
+            return
+            
+        # Stop the task
+        ecs.stop_task(
+            cluster='cloudrun-cluster',
+            task=target_task['taskArn']
+        )
+        
+        click.echo(f"Successfully cancelled task {task_id}")
+        
+    except Exception as e:
+        click.echo(f"Error cancelling task: {str(e)}", err=True)
         sys.exit(1)
 
 def main():
