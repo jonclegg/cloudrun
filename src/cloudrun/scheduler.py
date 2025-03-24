@@ -5,55 +5,57 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+from . import (
+    get_region,
+    get_bucket_name,
+    get_subnet_id,
+    get_task_definition_arn,
+    get_scheduler_lambda_arn
+)
 
 ###############################################################################
 
-def _get_events_client():
+def _get_events_client(env_name: str = 'default'):
     """Get a boto3 EventBridge client with the configured region."""
-    load_dotenv()
-    region = os.getenv('CLOUDRUN_REGION', 'us-east-1')
+    region = get_region(env_name)
     return boto3.client('events', region_name=region)
 
 ###############################################################################
 
-def _get_s3_client():
+def _get_s3_client(env_name: str = 'default'):
     """Get a boto3 S3 client with the configured region."""
-    load_dotenv()
-    region = os.getenv('CLOUDRUN_REGION', 'us-east-1')
+    region = get_region(env_name)
     return boto3.client('s3', region_name=region)
 
 ###############################################################################
 
-def _get_cloudrun_lambda_target():
+def _get_cloudrun_lambda_target(env_name: str = 'default'):
     """Get the ARN of the CloudRun executor Lambda function."""
-    load_dotenv()
-    # The Lambda function ARN should be stored in the environment file
-    lambda_arn = os.getenv('CLOUDRUN_SCHEDULER_LAMBDA_ARN')
+    lambda_arn = get_scheduler_lambda_arn(env_name)
     if not lambda_arn:
         raise RuntimeError(
-            "CLOUDRUN_SCHEDULER_LAMBDA_ARN environment variable not set. "
+            f"CLOUDRUN_SCHEDULER_LAMBDA_ARN configuration value not set for environment '{env_name}'. "
             "Please run create_infrastructure() to set up the required resources."
         )
     return lambda_arn
 
 ###############################################################################
 
-def _create_and_upload_zip(script_path: str) -> str:
+def _create_and_upload_zip(script_path: str, env_name: str = 'default') -> str:
     """
     Creates a zip file of the project and uploads it to S3.
     
     Args:
         script_path: Path to the script being run
+        env_name: Name of the environment
     
     Returns:
         str: S3 key where the zip was uploaded
     """
-    load_dotenv()
-    bucket_name = os.getenv('CLOUDRUN_BUCKET_NAME')
+    bucket_name = get_bucket_name(env_name)
     if not bucket_name:
-        raise RuntimeError("CLOUDRUN_BUCKET_NAME not set. Please run create_infrastructure() first.")
+        raise RuntimeError(f"CLOUDRUN_BUCKET_NAME not set for environment '{env_name}'. Please run create_infrastructure() first.")
 
     default_excludes = {'.venv/', 'venv/', '__pycache__/', '*.pyc', ".git/"}
     
@@ -74,10 +76,10 @@ def _create_and_upload_zip(script_path: str) -> str:
                     zipf.write(file_path, arcname)
     
     # Generate S3 key with a timestamp to ensure uniqueness
-    s3_key = f"scheduled_jobs/{os.path.basename(script_path)}/{os.path.basename(zip_path.name)}"
+    s3_key = f"scheduled_jobs/{env_name}/{os.path.basename(script_path)}/{os.path.basename(zip_path.name)}"
     
     # Upload to S3
-    s3 = _get_s3_client()
+    s3 = _get_s3_client(env_name)
     s3.upload_file(str(zip_path), bucket_name, s3_key)
     
     # Clean up the temporary file
@@ -89,166 +91,190 @@ def _create_and_upload_zip(script_path: str) -> str:
 
 def create_scheduled_job(
     name: str,
-    file_method_path: str,
-    schedule_expression: str,
-    description: str,
+    script_path: str,
+    schedule: str,
+    env_name: str = 'default',
     vcpus: float = 0.25,
     memory: int = 512,
     use_spot: bool = False,
+    method_name: Optional[str] = None,
     params: Optional[Dict[str, Any]] = None
-) -> str:
+) -> Dict[str, Any]:
     """
-    Create a scheduled job using EventBridge.
+    Create a scheduled job that will run at the specified schedule.
     
     Args:
-        name: Name for the scheduled job
-        file_method_path: Path to the script or module.method to run (e.g. "main.py" or "main.process_data")
-        schedule_expression: Schedule expression (cron or rate expression)
-        description: Description of the scheduled job
-        vcpus: Number of vCPUs to allocate
-        memory: Memory in MB to allocate
-        use_spot: Whether to use spot instances
-        params: Optional parameters to pass to the method
+        name: Name of the scheduled job
+        script_path: Path to the script to run
+        schedule: Cron expression for the schedule
+        env_name: Name of the environment to use (default: 'default')
+        vcpus: Number of vCPUs to allocate (default: 0.25)
+        memory: Amount of memory to allocate in MB (default: 512)
+        use_spot: Whether to use spot instances (default: False)
+        method_name: Optional name of a specific method to run in the script
+        params: Optional dictionary of parameters to pass to the method
         
     Returns:
-        str: ARN of the created EventBridge rule
+        Dict[str, Any]: Information about the created scheduled job
     """
-    events = _get_events_client()
-    lambda_arn = _get_cloudrun_lambda_target()
+    # Validate inputs
+    if not name or not script_path or not schedule:
+        raise ValueError("name, script_path, and schedule are required")
     
-    # Ensure the job name starts with "cloudrun-" internally
-    internal_name = name
-    if not internal_name.startswith('cloudrun-'):
-        internal_name = f"cloudrun-{name}"
+    # Get required configuration
+    bucket_name = get_bucket_name(env_name)
+    subnet_id = get_subnet_id(env_name)
+    task_definition_arn = get_task_definition_arn(env_name)
+    region = get_region(env_name)
     
-    # Parse file_method_path to extract script_path and method_name
-    if '.' in file_method_path and not file_method_path.endswith('.py'):
-        parts = file_method_path.split('.')
-        script_path = '.'.join(parts[:-1])
-        if not script_path.endswith('.py'):
-            script_path += '.py'
-        method_name = parts[-1]
-    else:
-        script_path = file_method_path
-        method_name = None
+    if not all([bucket_name, subnet_id, task_definition_arn]):
+        raise RuntimeError(
+            f"Missing required configuration values for environment '{env_name}'. "
+            "Please run create_infrastructure() first"
+        )
     
-    # Create and upload the zip file to S3
-    s3_key = _create_and_upload_zip(script_path)
+    # Upload script to S3
+    s3_client = _get_s3_client(env_name)
+    script_key = f'scripts/{env_name}/{name}/{os.path.basename(script_path)}'
     
-    # Create the CloudWatch Events rule
-    rule_response = events.put_rule(
-        Name=internal_name,
-        ScheduleExpression=schedule_expression,
-        State='ENABLED',
-        Description=description
-    )
+    try:
+        s3_client.upload_file(script_path, bucket_name, script_key)
+    except ClientError as e:
+        raise RuntimeError(f"Failed to upload script to S3: {str(e)}")
     
-    # Prepare the input for the Lambda function
-    lambda_input = {
+    # Create EventBridge rule
+    events_client = _get_events_client(env_name)
+    rule_name = f'cloudrun-{env_name}-{name}'
+    
+    # Prepare target input
+    target_input = {
         'script_path': script_path,
         'vcpus': vcpus,
         'memory': memory,
         'use_spot': use_spot,
-        'method_name': method_name,
-        'params': params,
-        's3_key': s3_key
+        's3_key': script_key,
+        'env_name': env_name
     }
     
-    # Add the target to the rule
-    events.put_targets(
-        Rule=internal_name,
-        Targets=[{
-            'Id': f'{internal_name}-target',
-            'Arn': lambda_arn,
-            'Input': json.dumps(lambda_input)
-        }]
-    )
+    if method_name:
+        target_input['method_name'] = method_name
+    if params:
+        target_input['params'] = params
     
-    # Return the ARN of the rule
-    return rule_response['RuleArn']
+    try:
+        response = events_client.put_rule(
+            Name=rule_name,
+            ScheduleExpression=f'cron({schedule})',
+            State='ENABLED',
+            Description=f'CloudRun scheduled job: {name} in environment {env_name}',
+            Tags=[{'Key': 'cloudrun', 'Value': 'true'}, {'Key': 'environment', 'Value': env_name}]
+        )
+        
+        rule_arn = response['RuleArn']
+        
+        # Add target to rule
+        events_client.put_targets(
+            Rule=rule_name,
+            Targets=[{
+                'Id': '1',
+                'Arn': _get_cloudrun_lambda_target(env_name),
+                'Input': json.dumps(target_input)
+            }]
+        )
+        
+        return {
+            'name': name,
+            'environment': env_name,
+            'rule_arn': rule_arn,
+            'schedule': schedule,
+            'script_path': script_path,
+            'script_key': script_key,
+            'vcpus': vcpus,
+            'memory': memory,
+            'use_spot': use_spot,
+            'method_name': method_name,
+            'params': params
+        }
+        
+    except ClientError as e:
+        raise RuntimeError(f"Failed to create scheduled job: {str(e)}")
 
 ###############################################################################
 
-def list_scheduled_jobs() -> List[Dict[str, Any]]:
+def list_scheduled_jobs(env_name: str = 'default') -> List[Dict[str, Any]]:
     """
-    List all scheduled jobs.
+    List all scheduled jobs for a specific environment.
     
+    Args:
+        env_name: Name of the environment to list jobs for (default: 'default')
+        
     Returns:
-        List[Dict[str, Any]]: List of scheduled jobs with the 'cloudrun-' prefix removed
-        from the Name field for better user experience.
+        List[Dict[str, Any]]: List of scheduled job information
     """
-    events = _get_events_client()
-    lambda_arn = _get_cloudrun_lambda_target()
+    events_client = _get_events_client(env_name)
     
-    # List all rules with the cloudrun- prefix
-    rules = events.list_rules(
-        NamePrefix='cloudrun-'  # Filter to rules with our prefix
-    )['Rules']
-    
-    # For each rule, add target information if available and remove the prefix from the display name
-    result = []
-    for rule in rules:
-        try:
-            targets = events.list_targets_by_rule(Rule=rule['Name'])['Targets']
-            rule['Targets'] = targets
+    try:
+        response = events_client.list_rules(
+            NamePrefix=f'cloudrun-{env_name}-'
+        )
+        
+        jobs = []
+        for rule in response.get('Rules', []):
+            # Get targets for the rule
+            targets = events_client.list_targets_by_rule(
+                Rule=rule['Name']
+            ).get('Targets', [])
             
-            # Remove 'cloudrun-' prefix from name for display purposes
-            if rule['Name'].startswith('cloudrun-'):
-                # Store the original name for internal use if needed
-                rule['InternalName'] = rule['Name']
-                # Set the display name without prefix
-                rule['Name'] = rule['Name'][9:]  # 'cloudrun-' is 9 characters
-                
-            result.append(rule)
-        except Exception as e:
-            # Include the rule even if we can't get target information
-            rule['Targets'] = []
-            rule['TargetError'] = str(e)
-            
-            # Remove 'cloudrun-' prefix from name for display purposes
-            if rule['Name'].startswith('cloudrun-'):
-                # Store the original name for internal use if needed
-                rule['InternalName'] = rule['Name']
-                # Set the display name without prefix
-                rule['Name'] = rule['Name'][9:]  # 'cloudrun-' is 9 characters
-                
-            result.append(rule)
-    
-    return result
+            if targets:
+                target_input = json.loads(targets[0]['Input'])
+                jobs.append({
+                    'name': rule['Name'].replace(f'cloudrun-{env_name}-', ''),
+                    'environment': env_name,
+                    'rule_arn': rule['Arn'],
+                    'schedule': rule['ScheduleExpression'].replace('cron(', '').replace(')', ''),
+                    'script_path': target_input['script_path'],
+                    'script_key': target_input['s3_key'],
+                    'vcpus': target_input['vcpus'],
+                    'memory': target_input['memory'],
+                    'use_spot': target_input['use_spot'],
+                    'method_name': target_input.get('method_name'),
+                    'params': target_input.get('params')
+                })
+        
+        return jobs
+        
+    except ClientError as e:
+        raise RuntimeError(f"Failed to list scheduled jobs: {str(e)}")
 
 ###############################################################################
 
-def delete_scheduled_job(name: str) -> None:
+def delete_scheduled_job(name: str, env_name: str = 'default') -> None:
     """
     Delete a scheduled job.
     
     Args:
         name: Name of the scheduled job to delete
+        env_name: Name of the environment (default: 'default')
     """
-    events = _get_events_client()
-    
-    # Ensure name has the cloudrun- prefix for internal use
-    internal_name = name
-    if not internal_name.startswith('cloudrun-'):
-        internal_name = f"cloudrun-{name}"
+    events_client = _get_events_client(env_name)
+    rule_name = f'cloudrun-{env_name}-{name}'
     
     try:
-        # List targets for the rule
-        targets = events.list_targets_by_rule(Rule=internal_name)['Targets']
+        # Remove targets first
+        targets = events_client.list_targets_by_rule(
+            Rule=rule_name
+        ).get('Targets', [])
         
-        # Remove targets from the rule
         if targets:
-            target_ids = [target['Id'] for target in targets]
-            events.remove_targets(
-                Rule=internal_name,
-                Ids=target_ids
+            events_client.remove_targets(
+                Rule=rule_name,
+                Ids=[target['Id'] for target in targets]
             )
         
         # Delete the rule
-        events.delete_rule(
-            Name=internal_name
+        events_client.delete_rule(
+            Name=rule_name
         )
-    except events.exceptions.ResourceNotFoundException:
-        raise ValueError(f"Job '{name}' not found")
-    except Exception as e:
-        raise RuntimeError(f"Error deleting job: {str(e)}") 
+        
+    except ClientError as e:
+        raise RuntimeError(f"Failed to delete scheduled job: {str(e)}") 

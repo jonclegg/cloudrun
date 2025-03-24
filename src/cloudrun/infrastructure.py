@@ -11,6 +11,24 @@ import tempfile
 import zipfile
 import uuid
 import logging
+from .config import (
+    get_config_value,
+    set_config_value,
+    validate_environment,
+    clear_environment
+)
+from . import (
+    set_region,
+    set_bucket_name,
+    set_subnet_id,
+    set_vpc_id,
+    set_task_definition_arn,
+    set_task_role_arn,
+    set_ecr_repo,
+    set_cluster_name,
+    set_scheduler_lambda_arn,
+    set_initialized
+)
 
 ###############################################################################
 
@@ -97,10 +115,9 @@ def _create_task_role(iam_client, task_role_name: str, additional_policies: list
 
 ###############################################################################
 
-def _create_ecs_cluster(ecs_client) -> None:
+def _create_ecs_cluster(ecs_client, cluster_name: str) -> None:
     """Create ECS cluster if it doesn't exist."""
-    print("\nCreating ECS cluster...")
-    cluster_name = 'cloudrun-cluster'
+    print(f"\nCreating ECS cluster: {cluster_name}")
     try:
         ecs_client.create_cluster(
             clusterName=cluster_name,
@@ -124,10 +141,10 @@ def _create_ecs_cluster(ecs_client) -> None:
 
 ###############################################################################
 
-def _create_ecr_repository(ecr_client) -> None:
+def _create_ecr_repository(ecr_client, env_name: str) -> None:
     """Create ECR repository if it doesn't exist."""
-    print("\nCreating ECR repository...")
-    repo_name = 'cloudrun-executor'
+    print(f"\nCreating ECR repository: cloudrun-executor-{env_name}")
+    repo_name = f'cloudrun-executor-{env_name}'
     try:
         ecr_client.create_repository(repositoryName=repo_name)
     except ecr_client.exceptions.RepositoryAlreadyExistsException:
@@ -327,20 +344,27 @@ def _create_task_definition(ecs_client, task_role: Dict[str, Any], ecr_repo: str
 
 ###############################################################################
 
-def _save_configuration(env_vars: Dict[str, str]) -> None:
-    """Save configuration to .env file."""
-    print("\nSaving configuration to .env file...")
-    with open('.env', 'a') as f:
-        for key, value in env_vars.items():
-            f.write(f'{key}={value}\n')
+def _save_configuration(env_vars: Dict[str, str], env_name: str) -> None:
+    """Save configuration to config file."""
+    print(f"\nSaving configuration for environment '{env_name}'...")
+    for key, value in env_vars.items():
+        set_config_value(key, value, env_name)
     print("Configuration saved")
 
 ###############################################################################
 
-def _delete_ecs_cluster(ecs_client) -> None:
+def _cleanup_config(env_name: str) -> None:
+    """Clean up configuration by removing CLOUDRUN_ variables."""
+    print(f"\nCleaning up configuration for environment '{env_name}'...")
+    clear_environment(env_name)
+    print("Configuration cleaned")
+
+###############################################################################
+
+def _delete_ecs_cluster(ecs_client, env_name: str) -> None:
     """Delete ECS cluster and its tasks."""
-    print("\nDeleting ECS cluster and tasks...")
-    cluster_name = 'cloudrun-cluster'
+    print(f"\nDeleting ECS cluster and tasks for environment '{env_name}'...")
+    cluster_name = f'cloudrun-cluster-{env_name}'
     try:
         tasks = ecs_client.list_tasks(cluster=cluster_name)
         if tasks.get('taskArns'):
@@ -359,9 +383,9 @@ def _delete_ecs_cluster(ecs_client) -> None:
 
 ###############################################################################
 
-def _delete_task_definitions(ecs_client) -> None:
+def _delete_task_definitions(ecs_client, env_name: str) -> None:
     """Delete all task definitions."""
-    print("\nDeleting task definitions...")
+    print(f"\nDeleting task definitions for environment '{env_name}'...")
     try:
         task_definitions = ecs_client.list_task_definitions(familyPrefix='cloudrun-task')
         for task_def in task_definitions.get('taskDefinitionArns', []):
@@ -371,10 +395,10 @@ def _delete_task_definitions(ecs_client) -> None:
 
 ###############################################################################
 
-def _delete_iam_role(iam_client) -> None:
+def _delete_iam_role(iam_client, env_name: str) -> None:
     """Delete IAM role and its attached policies."""
-    print("\nDeleting IAM roles...")
-    roles_to_delete = ['cloudrun-task-role', 'cloudrun-lambda-role']
+    print(f"\nDeleting IAM roles for environment '{env_name}'...")
+    roles_to_delete = ['cloudrun-task-role', f'cloudrun-lambda-role-{env_name}']
     
     for role_name in roles_to_delete:
         try:
@@ -403,10 +427,10 @@ def _delete_iam_role(iam_client) -> None:
 
 ###############################################################################
 
-def _delete_s3_bucket(s3_client) -> None:
+def _delete_s3_bucket(s3_client, env_name: str) -> None:
     """Delete S3 bucket and its contents."""
-    print("\nDeleting S3 bucket...")
-    bucket_name = os.getenv('CLOUDRUN_BUCKET_NAME')
+    print(f"\nDeleting S3 bucket for environment '{env_name}'...")
+    bucket_name = get_config_value('CLOUDRUN_BUCKET_NAME', env_name, f'cloudrun-{env_name}-{os.getenv("AWS_DEFAULT_REGION", "us-east-1")}-{os.getenv("USER", "default")}')
     if bucket_name:
         try:
             print("Deleting bucket contents...")
@@ -424,38 +448,14 @@ def _delete_s3_bucket(s3_client) -> None:
 
 ###############################################################################
 
-def _delete_ecr_repository(ecr_client) -> None:
+def _delete_ecr_repository(ecr_client, env_name: str) -> None:
     """Delete ECR repository."""
-    print("\nDeleting ECR repository...")
-    repo_name = 'cloudrun-executor'
+    print(f"\nDeleting ECR repository for environment '{env_name}'...")
+    repo_name = f'cloudrun-executor-{env_name}'
     try:
         ecr_client.delete_repository(repositoryName=repo_name, force=True)
     except ecr_client.exceptions.RepositoryNotFoundException:
         print("No ECR repository found to delete")
-
-###############################################################################
-
-def _cleanup_env_file() -> None:
-    """Clean up .env file by removing CLOUDRUN_ variables."""
-    print("\nCleaning up .env file...")
-    if os.path.exists('.env'):
-        with open('.env', 'r') as f:
-            lines = f.readlines()
-        with open('.env', 'w') as f:
-            for line in lines:
-                if not line.startswith('CLOUDRUN_'):
-                    f.write(line)
-        print("Configuration cleaned")
-
-###############################################################################
-
-def _save_infrastructure_settings(settings: Dict[str, Any]) -> None:
-    """Save infrastructure creation settings to a file."""
-    print("\nSaving infrastructure settings...")
-    settings_file = '.cloudrun_settings.json'
-    with open(settings_file, 'w') as f:
-        json.dump(settings, f, indent=2)
-    print("Settings saved")
 
 ###############################################################################
 
@@ -466,6 +466,14 @@ def _load_infrastructure_settings() -> Dict[str, Any]:
         with open(settings_file, 'r') as f:
             return json.load(f)
     return {}
+
+###############################################################################
+
+def _save_infrastructure_settings(settings: Dict[str, Any]) -> None:
+    """Save infrastructure creation settings to file."""
+    settings_file = '.cloudrun_settings.json'
+    with open(settings_file, 'w') as f:
+        json.dump(settings, f, indent=2)
 
 ###############################################################################
 
@@ -557,7 +565,7 @@ def _create_lambda_execution_role(iam_client, role_name: str) -> Dict[str, Any]:
 
 ###############################################################################
 
-def _create_scheduler_lambda(iam_client, role_arn: str, region: str) -> Dict[str, Any]:
+def _create_scheduler_lambda(iam_client, role_arn: str, region: str, env_name: str) -> Dict[str, Any]:
     """
     Create a Lambda function to execute scheduled jobs.
     
@@ -565,17 +573,18 @@ def _create_scheduler_lambda(iam_client, role_arn: str, region: str) -> Dict[str
         iam_client: IAM client
         role_arn: Role ARN to use for the Lambda function
         region: AWS region
+        env_name: Name of the environment
         
     Returns:
         Dict[str, Any]: Lambda function information
     """
-    print("\nCreating scheduler Lambda function...")
+    print(f"\nCreating scheduler Lambda function for environment '{env_name}'...")
     
     # Create Lambda client
     lambda_client = boto3.client('lambda', region_name=region)
     
     # Create Lambda execution role
-    lambda_role = _create_lambda_execution_role(iam_client, 'cloudrun-lambda-role')
+    lambda_role = _create_lambda_execution_role(iam_client, f'cloudrun-lambda-role-{env_name}')
     lambda_role_arn = lambda_role['Role']['Arn']
     
     # Create a temporary directory for Lambda code
@@ -741,20 +750,44 @@ def lambda_handler(event, context):
             )
             print("Updated existing Lambda function code")
             
-            # Update function configuration
-            lambda_client.update_function_configuration(
-                FunctionName=function_name,
-                Role=lambda_role_arn,
-                Environment={
-                    'Variables': {
-                        'CLOUDRUN_BUCKET_NAME': os.getenv('CLOUDRUN_BUCKET_NAME', ''),
-                        'CLOUDRUN_SUBNET_ID': os.getenv('CLOUDRUN_SUBNET_ID', ''),
-                        'CLOUDRUN_TASK_DEFINITION_ARN': os.getenv('CLOUDRUN_TASK_DEFINITION_ARN', ''),
-                        'CLOUDRUN_REGION': os.getenv('CLOUDRUN_REGION', 'us-east-1')
-                    }
-                }
-            )
-            print("Updated Lambda function configuration")
+            # Update function configuration with retries
+            max_retries = 5
+            retry_delay = 5
+            attempt = 0
+            last_error = None
+            
+            while attempt < max_retries:
+                try:
+                    print(f"Updating Lambda function configuration (attempt {attempt + 1}/{max_retries})...")
+                    lambda_client.update_function_configuration(
+                        FunctionName=function_name,
+                        Role=lambda_role_arn,
+                        Environment={
+                            'Variables': {
+                                'CLOUDRUN_BUCKET_NAME': get_config_value('CLOUDRUN_BUCKET_NAME', env_name),
+                                'CLOUDRUN_SUBNET_ID': get_config_value('CLOUDRUN_SUBNET_ID', env_name),
+                                'CLOUDRUN_TASK_DEFINITION_ARN': get_config_value('CLOUDRUN_TASK_DEFINITION_ARN', env_name),
+                                'CLOUDRUN_REGION': get_config_value('CLOUDRUN_REGION', env_name)
+                            }
+                        }
+                    )
+                    print("Successfully updated Lambda function configuration")
+                    break
+                except lambda_client.exceptions.ResourceConflictException as e:
+                    last_error = e
+                    print(f"Function update in progress, retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    attempt += 1
+                except Exception as e:
+                    # Some other error occurred, don't retry
+                    print(f"Unexpected error updating Lambda function configuration: {str(e)}")
+                    raise
+            
+            if attempt >= max_retries:
+                print(f"Failed to update Lambda function configuration after {max_retries} attempts")
+                if last_error:
+                    raise last_error
         except lambda_client.exceptions.ResourceNotFoundException:
             # Function doesn't exist, create it with retries
             max_retries = 5
@@ -919,14 +952,15 @@ def _attach_scheduler_policies(iam_client, task_role_name: str) -> None:
 
 ###############################################################################
 
-def _delete_scheduled_jobs(region: str) -> None:
+def _delete_scheduled_jobs(region: str, env_name: str) -> None:
     """
     Delete all scheduled jobs created by CloudRun.
     
     Args:
         region: AWS region
+        env_name: Name of the environment
     """
-    print("\nDeleting scheduled jobs...")
+    print(f"\nDeleting scheduled jobs for environment '{env_name}'...")
     events = boto3.client('events', region_name=region)
     lambda_client = boto3.client('lambda', region_name=region)
     
@@ -1022,12 +1056,13 @@ def _delete_scheduled_jobs(region: str) -> None:
 
 ###############################################################################
 
-def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
+def create_infrastructure(env_name: str = 'default', region: str = None, **kwargs) -> Dict[str, Any]:
     """
     Initialize AWS infrastructure for CloudRun.
     Creates all necessary resources and saves configuration.
     
     Args:
+        env_name: Name of the environment to create (default: 'default')
         region: AWS region to use. If None, uses AWS_DEFAULT_REGION or us-east-1
         **kwargs: Additional arguments including:
             - additional_policies: Optional list of additional IAM policy ARNs to attach to the task role
@@ -1040,7 +1075,7 @@ def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Dictionary containing created resource information
     """
-    print("\n=== Starting CloudRun Infrastructure Creation ===")
+    print(f"\n=== Starting CloudRun Infrastructure Creation for environment '{env_name}' ===")
     load_dotenv()
     
     # Set region
@@ -1051,6 +1086,7 @@ def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
     
     region = os.getenv('AWS_DEFAULT_REGION')
     print(f"Using AWS region: {region}")
+    set_region(region)
     
     # Save settings for future use
     settings = {
@@ -1062,24 +1098,30 @@ def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
     # Initialize AWS clients
     aws_clients = _initialize_aws_clients(region)
     
-    # Create S3 bucket
-    bucket_name = os.getenv('CLOUDRUN_BUCKET_NAME', f'cloudrun-{region}-{os.getenv("USER", "default")}')
+    # Create S3 bucket with environment name
+    bucket_name = get_config_value('CLOUDRUN_BUCKET_NAME', env_name, f'cloudrun-{env_name}-{region}-{os.getenv("USER", "default")}')
     _create_s3_bucket(aws_clients['s3'], bucket_name)
+    set_bucket_name(bucket_name)
 
     # Create CloudWatch log group
     _create_cloudwatch_log_group(aws_clients['logs'])
 
-    # Create ECS task execution role
-    task_role = _create_task_role(aws_clients['iam'], 'cloudrun-task-role', kwargs.get('additional_policies'))
+    # Create ECS task execution role with environment name
+    task_role = _create_task_role(aws_clients['iam'], f'cloudrun-task-role-{env_name}', kwargs.get('additional_policies'))
+    set_task_role_arn(task_role['Role']['Arn'], env_name)
 
-    # Create ECS cluster
-    _create_ecs_cluster(aws_clients['ecs'])
+    # Create ECS cluster with environment name
+    cluster_name = f'cloudrun-cluster-{env_name}'
+    _create_ecs_cluster(aws_clients['ecs'], cluster_name)
+    set_cluster_name(cluster_name, env_name)
 
-    # Create ECR repository
-    _create_ecr_repository(aws_clients['ecr'])
+    # Create ECR repository with environment name
+    _create_ecr_repository(aws_clients['ecr'], env_name)
     
     # Get default VPC and subnet
     vpc_id, subnet_id = _get_vpc_and_subnet(aws_clients['ec2'], kwargs.get('vpc_id'), kwargs.get('subnet_id'))
+    set_vpc_id(vpc_id, env_name)
+    set_subnet_id(subnet_id, env_name)
     
     # Get AWS account ID
     print("\nGetting AWS account information...")
@@ -1088,25 +1130,22 @@ def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
     print(f"Using AWS account: {account_id}")
     
     # Create task definition first
-    ecr_repo = f'{account_id}.dkr.ecr.{region}.amazonaws.com/cloudrun-executor'
+    ecr_repo = f'{account_id}.dkr.ecr.{region}.amazonaws.com/cloudrun-executor-{env_name}'
     task_definition = _create_task_definition(aws_clients['ecs'], task_role, ecr_repo, region)
-    
-    # Set environment variables needed for Lambda function
-    os.environ['CLOUDRUN_BUCKET_NAME'] = bucket_name
-    os.environ['CLOUDRUN_SUBNET_ID'] = subnet_id
-    os.environ['CLOUDRUN_TASK_DEFINITION_ARN'] = task_definition['taskDefinition']['taskDefinitionArn']
-    os.environ['CLOUDRUN_REGION'] = region
+    set_task_definition_arn(task_definition['taskDefinition']['taskDefinitionArn'], env_name)
+    set_ecr_repo(ecr_repo, env_name)
 
-    # Create a scheduled job Lambda function
-    lambda_function = _create_scheduler_lambda(aws_clients['iam'], task_role['Role']['Arn'], region)
+    # Create a scheduled job Lambda function with environment name
+    lambda_function = _create_scheduler_lambda(aws_clients['iam'], task_role['Role']['Arn'], region, env_name)
+    set_scheduler_lambda_arn(lambda_function['Configuration']['FunctionArn'], env_name)
     
     # Attach scheduler policies to task role
-    _attach_scheduler_policies(aws_clients['iam'], 'cloudrun-task-role')
+    _attach_scheduler_policies(aws_clients['iam'], f'cloudrun-task-role-{env_name}')
 
     # Build and push Docker image
     _build_and_push_docker_image(ecr_repo, region, os.path.dirname(os.path.abspath(__file__)), os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docker'), **kwargs)
 
-    # Save configuration to .env file
+    # Save configuration
     env_vars = {
         'CLOUDRUN_REGION': region,
         'CLOUDRUN_BUCKET_NAME': bucket_name,
@@ -1116,77 +1155,83 @@ def create_infrastructure(region: str = None, **kwargs) -> Dict[str, Any]:
         'CLOUDRUN_TASK_FAMILY': task_definition['taskDefinition']['family'],
         'CLOUDRUN_TASK_ROLE_ARN': task_role['Role']['Arn'],
         'CLOUDRUN_ECR_REPO': ecr_repo,
-        'CLOUDRUN_CLUSTER_NAME': 'cloudrun-cluster',
+        'CLOUDRUN_CLUSTER_NAME': cluster_name,
         'CLOUDRUN_SCHEDULER_LAMBDA_ARN': lambda_function['Configuration']['FunctionArn'],
         'CLOUDRUN_INITIALIZED': 'true'
     }
-    _save_configuration(env_vars)
+    _save_configuration(env_vars, env_name)
+    set_initialized(True, env_name)
     
-    print("\n=== CloudRun Infrastructure Creation Complete ===")
+    print(f"\n=== CloudRun Infrastructure Creation Complete for environment '{env_name}' ===")
     return env_vars
 
 ###############################################################################
 
-def destroy_infrastructure() -> None:
+def destroy_infrastructure(env_name: str = 'default') -> None:
     """
-    Destroy all AWS infrastructure created by CloudRun.
+    Destroy all AWS infrastructure created by CloudRun for a specific environment.
     This includes ECS cluster, IAM roles, S3 bucket, and ECR repository.
-    Also cleans up the .env file by removing all CLOUDRUN_ environment variables.
-    """
-    print("\n=== Starting CloudRun Infrastructure Destruction ===")
-    load_dotenv()
+    Also cleans up the configuration by removing all CLOUDRUN_ variables.
     
-    region = os.getenv('CLOUDRUN_REGION', 'us-east-1')
+    Args:
+        env_name: Name of the environment to destroy (default: 'default')
+    """
+    print(f"\n=== Starting CloudRun Infrastructure Destruction for environment '{env_name}' ===")
+    
+    region = get_config_value('CLOUDRUN_REGION', env_name, 'us-east-1')
     print(f"Using AWS region: {region}")
     
     # Initialize AWS clients
     aws_clients = _initialize_aws_clients(region)
     
     # Delete all scheduled jobs first
-    _delete_scheduled_jobs(region)
+    _delete_scheduled_jobs(region, env_name)
     
     # Delete ECS cluster and tasks
-    _delete_ecs_cluster(aws_clients['ecs'])
+    _delete_ecs_cluster(aws_clients['ecs'], env_name)
     
     # Delete task definition
-    _delete_task_definitions(aws_clients['ecs'])
+    _delete_task_definitions(aws_clients['ecs'], env_name)
     
     # Delete IAM roles
-    _delete_iam_role(aws_clients['iam'])
+    _delete_iam_role(aws_clients['iam'], env_name)
     
     # Delete S3 bucket
-    _delete_s3_bucket(aws_clients['s3'])
+    _delete_s3_bucket(aws_clients['s3'], env_name)
     
     # Delete ECR repository
-    _delete_ecr_repository(aws_clients['ecr'])
+    _delete_ecr_repository(aws_clients['ecr'], env_name)
 
     # Delete scheduled jobs Lambda function
     print("\nDeleting scheduled jobs Lambda function...")
     lambda_client = boto3.client('lambda', region_name=region)
     try:
         lambda_client.delete_function(
-            FunctionName='cloudrun-scheduler'
+            FunctionName=f'cloudrun-scheduler-{env_name}'
         )
         print("Lambda function deleted")
     except lambda_client.exceptions.ResourceNotFoundException:
         print("Lambda function not found or already deleted")
 
-    # Clean up .env file
-    _cleanup_env_file()
+    # Clean up configuration
+    _cleanup_config(env_name)
     
-    print("\n=== CloudRun Infrastructure Destruction Complete ===") 
+    print(f"\n=== CloudRun Infrastructure Destruction Complete for environment '{env_name}' ===")
 
 ###############################################################################
 
-def rebuild_infrastructure() -> Dict[str, Any]:
+def rebuild_infrastructure(env_name: str = 'default') -> Dict[str, Any]:
     """
     Rebuild the AWS infrastructure using previously saved settings.
     This will destroy the existing infrastructure and recreate it with the same settings.
     
+    Args:
+        env_name: Name of the environment to rebuild (default: 'default')
+        
     Returns:
         Dict[str, Any]: Dictionary containing created resource information
     """
-    print("\n=== Starting CloudRun Infrastructure Rebuild ===")
+    print(f"\n=== Starting CloudRun Infrastructure Rebuild for environment '{env_name}' ===")
     
     # Load previous settings
     settings = _load_infrastructure_settings()
@@ -1194,10 +1239,10 @@ def rebuild_infrastructure() -> Dict[str, Any]:
         raise ValueError("No previous infrastructure settings found. Please use create_infrastructure first.")
     
     # Destroy existing infrastructure
-    destroy_infrastructure()
+    destroy_infrastructure(env_name)
     
     # Recreate infrastructure with saved settings
-    return create_infrastructure(**settings)
+    return create_infrastructure(env_name=env_name, **settings)
 
 ############################################################################### 
 

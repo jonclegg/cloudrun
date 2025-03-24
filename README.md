@@ -1,266 +1,153 @@
 # CloudRun
 
-Run Python scripts in AWS Fargate with ease.
+CloudRun is a Python package that makes it easy to run Python scripts in AWS ECS Fargate with scheduled execution capabilities.
 
 ## Features
 
-- Run Python scripts in AWS Fargate with configurable vCPUs and memory
-- Support for spot instances for cost optimization
-- Automatic infrastructure setup and management
-- Simple CLI interface
+- Run Python scripts in AWS ECS Fargate
+- Schedule script execution using AWS EventBridge
+- Support for spot instances to reduce costs
+- Automatic infrastructure provisioning
+- Simple configuration management
+- Multiple environment support (e.g., development, staging, production)
 
 ## Installation
 
-You can install CloudRun directly from GitHub:
-
 ```bash
-pip install git+https://github.com/jonclegg/cloudrun.git
+pip install cloudrun
 ```
 
-## Usage
+## Quick Start
 
-### Python API Examples
-
-Here are examples of how to use CloudRun in your Python code:
-
+1. Initialize the infrastructure:
 ```python
-from cloudrun import run
-from cloudrun.infrastructure import create_infrastructure, destroy_infrastructure
-from cloudrun.scheduler import create_scheduled_job, list_scheduled_jobs, delete_scheduled_job
-from cloudrun.logger import get_logger
+from cloudrun import create_infrastructure
 
-# Set up CloudRun infrastructure (only needed once)
-resources = create_infrastructure(region="us-east-1")
-print(f"Infrastructure created: {resources}")
+# Create infrastructure in us-east-1 for the default environment
+create_infrastructure(region='us-east-1')
 
-# Set up infrastructure with custom Docker commands
-# This allows installing additional system packages or running custom commands in the Docker image
-resources = create_infrastructure(
-    region="us-east-1",
-    custom_docker_commands="""
-RUN apt-get update && apt-get install -y \\
-    postgresql-client \\
-    ffmpeg \\
-    && rm -rf /var/lib/apt/lists/*
+# Create infrastructure for a specific environment (e.g., production)
+create_infrastructure(
+    env_name='production',
+    region='us-east-1'
+)
+```
 
-# Install additional system tools
-RUN pip install --no-cache-dir \\
-    psycopg2-binary
-"""
+2. Create a scheduled job:
+```python
+from cloudrun import create_scheduled_job
+
+# Create a job that runs every day at midnight in the default environment
+create_scheduled_job(
+    name='my-job',
+    script_path='my_script.py',
+    schedule='0 0 * * *',  # Cron expression
+    vcpus=0.25,  # 0.25 vCPUs
+    memory=512,  # 512 MB
+    use_spot=True  # Use spot instances for cost savings
 )
 
-# Get a logger that automatically sends logs to CloudWatch
-logger = get_logger(__name__)
-
-# Run a basic script
-job_id = run(
-    script_path="scripts/process_data.py",
+# Create a job in a specific environment (e.g., production)
+create_scheduled_job(
+    name='my-job',
+    script_path='my_script.py',
+    schedule='0 0 * * *',
+    env_name='production',
     vcpus=0.25,
-    memory=512
+    memory=512,
+    use_spot=True
 )
-print(f"Job started with ID: {job_id}")
+```
 
-# Run a script with a specific function
-job_id = run(
-    script_path="scripts/analytics.process_data",  # Will call process_data() function in analytics.py
-    vcpus=1.0,
-    memory=1024,
-    use_spot=True,  # Use spot instances for cost savings (may be interrupted)
-    params={
-        "date": "2023-01-01",
-        "batch_size": 100
-    }
-)
-print(f"Job started with ID: {job_id}")
+3. List scheduled jobs:
+```python
+from cloudrun import list_scheduled_jobs
 
-# Schedule a job to run daily at 2 AM UTC
-job_arn = create_scheduled_job(
-    name="daily-data-processing",
-    file_method_path="scripts/analytics.process_data",
-    schedule_expression="cron(0 2 * * ? *)",
-    description="Daily data processing job",
-    vcpus=1.0,
-    memory=1024,
-    use_spot=True,
-    params={"mode": "daily"}
-)
-print(f"Scheduled job created: {job_arn}")
-
-# List all scheduled jobs
+# List jobs in the default environment
 jobs = list_scheduled_jobs()
 for job in jobs:
-    print(f"Job: {job['Name']}, Schedule: {job['ScheduleExpression']}")
+    print(f"Job: {job['name']}")
+    print(f"Environment: {job['environment']}")
+    print(f"Schedule: {job['schedule']}")
+    print(f"Script: {job['script_path']}")
 
-# Delete a scheduled job
-delete_scheduled_job("daily-data-processing")
+# List jobs in a specific environment
+production_jobs = list_scheduled_jobs(env_name='production')
+```
 
-# Completely remove all CloudRun infrastructure when you're done
+4. Delete a scheduled job:
+```python
+from cloudrun import delete_scheduled_job
+
+# Delete a job from the default environment
+delete_scheduled_job('my-job')
+
+# Delete a job from a specific environment
+delete_scheduled_job('my-job', env_name='production')
+```
+
+5. Clean up infrastructure:
+```python
+from cloudrun import destroy_infrastructure
+
+# Destroy infrastructure for the default environment
 destroy_infrastructure()
+
+# Destroy infrastructure for a specific environment
+destroy_infrastructure(env_name='production')
 ```
 
-### Command Line Interface
+## Configuration
 
-CloudRun provides a comprehensive CLI for managing your jobs and infrastructure.
+CloudRun uses a configuration system stored in the `.cloudrun` directory in your home folder. The configuration is stored in JSON format in `~/.cloudrun/config.json`.
 
-#### Setting Up Infrastructure
+Each environment has its own configuration section. The following configuration values are used for each environment:
 
-```bash
-# Initialize AWS infrastructure in a specific region
-cloudrun setup --region us-west-2
-
-# Use a specific AWS profile
-cloudrun setup --profile development
-
-# Set up with custom Docker commands to install additional packages
-cloudrun setup --region us-west-2 --custom-docker-commands "RUN apt-get update && apt-get install -y libpq-dev"
-```
-
-#### Running Scripts
-
-The `run` module can be used in your Python script as shown in the Python examples above.
-
-#### Managing Scheduled Jobs
-
-```bash
-# Create a scheduled job that runs every day at 8 AM UTC
-cloudrun schedule create \
-  --file-method-path your_script.py \
-  --name daily-morning-job \
-  --schedule-expression "cron(0 8 * * ? *)" \
-  --description "Daily morning job to process data"
-
-# Create a job to run every 2 hours with 1 vCPU and 2GB memory
-cloudrun schedule create \
-  --file-method-path your_script.py \
-  --name every-2-hours \
-  --schedule-expression "rate(2 hours)" \
-  --description "Job that runs every 2 hours" \
-  --vcpus 1.0 \
-  --memory 2048
-
-# Schedule a job that calls a specific method with parameters
-cloudrun schedule create \
-  --file-method-path your_script.process_data \
-  --name method-job \
-  --schedule-expression "rate(1 day)" \
-  --params '{"key": "value", "date": "2023-01-01"}' \
-  --description "Job that calls a specific method with parameters" \
-  --use-spot
-```
-
-#### Listing Scheduled Jobs
-
-```bash
-# List all scheduled jobs
-cloudrun schedule list
-```
-
-#### Deleting Scheduled Jobs
-
-```bash
-# Delete a scheduled job
-cloudrun schedule delete --name daily-morning-job
-```
-
-#### Working with Logs
-
-```bash
-# Fetch the last hour of logs from the CloudRun log group
-cloudrun logs get --log-group /ecs/cloudrun --hours 1
-
-# Filter logs with a specific pattern
-cloudrun logs get --log-group /ecs/cloudrun --filter "ERROR"
-
-# Filter logs for a specific task
-cloudrun logs get --log-group /ecs/cloudrun --task-id your-task-id
-
-# Tail logs in real-time (like 'tail -f')
-cloudrun logs get --log-group /ecs/cloudrun --tail
-
-# Tail logs with a filter pattern
-cloudrun logs get --log-group /ecs/cloudrun --tail --filter "ERROR"
-
-# Tail logs for a specific task
-cloudrun logs get --log-group /ecs/cloudrun --tail --task-id your-task-id
-
-# Show stream names in the log output
-cloudrun logs get --log-group /ecs/cloudrun --tail --show-stream
-```
-
-CloudRun's log tailing feature works like `tail -f` on Linux/macOS, displaying new log entries as they arrive in real-time. This is especially useful when monitoring running jobs. Press Ctrl+C to stop tailing logs.
-
-#### Destroying Infrastructure
-
-```bash
-# Remove all CloudRun infrastructure
-cloudrun destroy
-```
-
-### Environment Variables
-
-CloudRun uses the following environment variables:
-
-- `AWS_ACCESS_KEY_ID`: AWS access key
-- `AWS_SECRET_ACCESS_KEY`: AWS secret key
-- `AWS_DEFAULT_REGION`: AWS region (default: us-east-1)
-- `CLOUDRUN_REGION`: Region for CloudRun resources
-- `CLOUDRUN_BUCKET_NAME`: S3 bucket name for script uploads
+- `CLOUDRUN_REGION`: AWS region to use (default: us-east-1)
+- `CLOUDRUN_BUCKET_NAME`: S3 bucket for storing scripts
 - `CLOUDRUN_SUBNET_ID`: Subnet ID for ECS tasks
+- `CLOUDRUN_VPC_ID`: VPC ID for ECS tasks
 - `CLOUDRUN_TASK_DEFINITION_ARN`: ECS task definition ARN
-- `CLOUDRUN_LOG_GROUP`: CloudWatch log group name (default: /ecs/cloudrun)
+- `CLOUDRUN_TASK_FAMILY`: ECS task family name
+- `CLOUDRUN_TASK_ROLE_ARN`: IAM role ARN for ECS tasks
+- `CLOUDRUN_ECR_REPO`: ECR repository for the executor container
+- `CLOUDRUN_CLUSTER_NAME`: ECS cluster name
+- `CLOUDRUN_SCHEDULER_LAMBDA_ARN`: Lambda function ARN for job scheduling
+- `CLOUDRUN_INITIALIZED`: Whether infrastructure has been initialized
 
-These are automatically set when running `cloudrun setup`.
-
-### Scheduled Jobs Details
-
-When you schedule a job, CloudRun automatically:
-1. Packages your code into a zip file
-2. Uploads it to S3
-3. Creates an EventBridge rule with your schedule
-4. Sets up a Lambda function to launch an ECS task when triggered
-
-CloudRun supports two types of schedule expressions:
-
-1. **Cron Expressions**: `cron(0 8 * * ? *)` - Run at 8:00 AM UTC every day
-2. **Rate Expressions**: `rate(1 hour)` - Run every hour
-
-See `examples/scheduled_job.md` for more detailed examples.
-
-### Logging
-
-CloudRun provides a pre-configured logger that automatically sends logs to CloudWatch. You can use it in your scripts like this:
+You can access these values programmatically:
 
 ```python
-from cloudrun.logger import get_logger
-
-# Get a logger instance
-logger = get_logger(__name__)
-
-# Use the logger
-logger.info("Starting job...")
-logger.debug("Processing data...")
-logger.error("An error occurred")
-```
-
-The logger will automatically:
-- Create the log group if it doesn't exist
-- Send logs to CloudWatch with proper timestamps and formatting
-- Use the log group specified in the `run()` function or environment variable
-
-You can specify a custom log group when running your script:
-
-```python
-job_id = run(
-    script_path="your_script.py",
-    log_group="/custom/log/group"  # Optional: Custom CloudWatch log group
+from cloudrun import (
+    get_region,
+    get_bucket_name,
+    get_subnet_id,
+    get_vpc_id,
+    get_task_definition_arn,
+    get_task_role_arn,
+    get_ecr_repo,
+    get_cluster_name,
+    get_scheduler_lambda_arn
 )
+
+# Get configuration values for the default environment
+region = get_region()
+bucket_name = get_bucket_name()
+subnet_id = get_subnet_id()
+# ... etc.
+
+# Get configuration values for a specific environment
+region = get_region('production')
+bucket_name = get_bucket_name('production')
+subnet_id = get_subnet_id('production')
+# ... etc.
 ```
 
 ## Development
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/jonclegg/cloudrun.git
+git clone https://github.com/yourusername/cloudrun.git
 cd cloudrun
 ```
 
@@ -282,4 +169,4 @@ pytest
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details. 

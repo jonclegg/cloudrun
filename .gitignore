@@ -46,4 +46,11 @@ htmlcov/
 # Misc
 .DS_Store
 *.log
-temp.zip 
+temp.zip
+
+# CloudRun
+.cloudrun/
+.cloudrun_settings.json
+
+# OS
+Thumbs.db 

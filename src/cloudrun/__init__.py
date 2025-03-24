@@ -4,7 +4,15 @@ import zipfile
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
-from dotenv import load_dotenv
+from .config import (
+    get_config_value,
+    set_config_value,
+    get_environment_config,
+    save_environment_config,
+    validate_environment,
+    clear_environment,
+    list_environments
+)
 import json
 import uuid
 import time
@@ -16,8 +24,7 @@ def check_initialization() -> bool:
     Checks if CloudRun has been initialized.
     Returns True if initialized, False otherwise.
     """
-    load_dotenv()
-    return os.getenv('CLOUDRUN_INITIALIZED') == 'true'
+    return get_config_value('CLOUDRUN_INITIALIZED') == 'true'
 
 ###############################################################################
 
@@ -55,25 +62,147 @@ def validate_cpu_memory(vcpus: float, memory: int) -> None:
 
 def validate_environment() -> None:
     """
-    Validates required environment variables are set.
+    Validates required configuration values are set.
     
     Raises:
-        RuntimeError: If required environment variables are missing
+        RuntimeError: If required configuration values are missing
     """
-    required_vars = [
-        'CLOUDRUN_BUCKET_NAME',
-        'CLOUDRUN_TASK_ROLE_ARN',
-        'CLOUDRUN_TASK_DEFINITION_ARN',
-        'CLOUDRUN_INITIALIZED',
-        'CLOUDRUN_SUBNET_ID'
-    ]
-    
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-    if missing_vars:
-        raise RuntimeError(
-            f"Missing required environment variables: {', '.join(missing_vars)}. "
-            "Please run create_infrastructure() first"
-        )
+    validate_environment()
+
+###############################################################################
+
+def get_aws_session(profile: Optional[str] = None) -> boto3.Session:
+    """Configure and return an AWS session with the given profile."""
+    if profile:
+        session = boto3.Session(profile_name=profile)
+        # Set credentials for boto3 default session
+        credentials = session.get_credentials()
+        os.environ['AWS_ACCESS_KEY_ID'] = credentials.access_key
+        os.environ['AWS_SECRET_ACCESS_KEY'] = credentials.secret_key
+        if session.region_name:
+            os.environ['AWS_DEFAULT_REGION'] = session.region_name
+        return session
+    return boto3.Session()
+
+###############################################################################
+
+def get_region(env_name: str = 'default') -> str:
+    """Get the configured AWS region for a specific environment."""
+    return get_config_value('CLOUDRUN_REGION', env_name, 'us-east-1')
+
+###############################################################################
+
+def get_bucket_name(env_name: str = 'default') -> Optional[str]:
+    """Get the configured S3 bucket name for a specific environment."""
+    return get_config_value('CLOUDRUN_BUCKET_NAME', env_name)
+
+###############################################################################
+
+def get_task_role_arn(env_name: str = 'default') -> Optional[str]:
+    """Get the configured task role ARN for a specific environment."""
+    return get_config_value('CLOUDRUN_TASK_ROLE_ARN', env_name)
+
+###############################################################################
+
+def get_task_definition_arn(env_name: str = 'default') -> Optional[str]:
+    """Get the configured task definition ARN for a specific environment."""
+    return get_config_value('CLOUDRUN_TASK_DEFINITION_ARN', env_name)
+
+###############################################################################
+
+def get_subnet_id(env_name: str = 'default') -> Optional[str]:
+    """Get the configured subnet ID for a specific environment."""
+    return get_config_value('CLOUDRUN_SUBNET_ID', env_name)
+
+###############################################################################
+
+def get_vpc_id(env_name: str = 'default') -> Optional[str]:
+    """Get the configured VPC ID for a specific environment."""
+    return get_config_value('CLOUDRUN_VPC_ID', env_name)
+
+###############################################################################
+
+def get_ecr_repo(env_name: str = 'default') -> Optional[str]:
+    """Get the configured ECR repository for a specific environment."""
+    return get_config_value('CLOUDRUN_ECR_REPO', env_name)
+
+###############################################################################
+
+def get_cluster_name(env_name: str = 'default') -> Optional[str]:
+    """Get the configured ECS cluster name for a specific environment."""
+    return get_config_value('CLOUDRUN_CLUSTER_NAME', env_name)
+
+###############################################################################
+
+def get_scheduler_lambda_arn(env_name: str = 'default') -> Optional[str]:
+    """Get the configured scheduler Lambda ARN for a specific environment."""
+    return get_config_value('CLOUDRUN_SCHEDULER_LAMBDA_ARN', env_name)
+
+###############################################################################
+
+def set_region(region: str, env_name: str = 'default') -> None:
+    """Set the AWS region for a specific environment."""
+    set_config_value('CLOUDRUN_REGION', region, env_name)
+
+###############################################################################
+
+def set_bucket_name(bucket_name: str, env_name: str = 'default') -> None:
+    """Set the S3 bucket name for a specific environment."""
+    set_config_value('CLOUDRUN_BUCKET_NAME', bucket_name, env_name)
+
+###############################################################################
+
+def set_task_role_arn(task_role_arn: str, env_name: str = 'default') -> None:
+    """Set the task role ARN for a specific environment."""
+    set_config_value('CLOUDRUN_TASK_ROLE_ARN', task_role_arn, env_name)
+
+###############################################################################
+
+def set_task_definition_arn(task_definition_arn: str, env_name: str = 'default') -> None:
+    """Set the task definition ARN for a specific environment."""
+    set_config_value('CLOUDRUN_TASK_DEFINITION_ARN', task_definition_arn, env_name)
+
+###############################################################################
+
+def set_subnet_id(subnet_id: str, env_name: str = 'default') -> None:
+    """Set the subnet ID for a specific environment."""
+    set_config_value('CLOUDRUN_SUBNET_ID', subnet_id, env_name)
+
+###############################################################################
+
+def set_vpc_id(vpc_id: str, env_name: str = 'default') -> None:
+    """Set the VPC ID for a specific environment."""
+    set_config_value('CLOUDRUN_VPC_ID', vpc_id, env_name)
+
+###############################################################################
+
+def set_ecr_repo(ecr_repo: str, env_name: str = 'default') -> None:
+    """Set the ECR repository for a specific environment."""
+    set_config_value('CLOUDRUN_ECR_REPO', ecr_repo, env_name)
+
+###############################################################################
+
+def set_cluster_name(cluster_name: str, env_name: str = 'default') -> None:
+    """Set the ECS cluster name for a specific environment."""
+    set_config_value('CLOUDRUN_CLUSTER_NAME', cluster_name, env_name)
+
+###############################################################################
+
+def set_scheduler_lambda_arn(lambda_arn: str, env_name: str = 'default') -> None:
+    """Set the scheduler Lambda ARN for a specific environment."""
+    set_config_value('CLOUDRUN_SCHEDULER_LAMBDA_ARN', lambda_arn, env_name)
+
+###############################################################################
+
+def set_initialized(initialized: bool, env_name: str = 'default') -> None:
+    """Set whether infrastructure is initialized for a specific environment."""
+    set_config_value('CLOUDRUN_INITIALIZED', initialized, env_name)
+
+###############################################################################
+
+def clear_environment() -> None:
+    """Clear all configuration values."""
+    clear_environment()
 
 ###############################################################################
 
@@ -150,6 +279,7 @@ def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], 
     
     zip_path.unlink()
     return s3_key
+
 ###############################################################################
 
 def run_ecs_task(
@@ -290,6 +420,43 @@ def run(
 
 ###############################################################################
 
-__all__ = ['cli', 'create_infrastructure', 'destroy_infrastructure', 'ensure_infrastructure'] 
+__all__ = [
+    # Configuration functions
+    'get_region',
+    'set_region',
+    'get_bucket_name',
+    'set_bucket_name',
+    'get_subnet_id',
+    'set_subnet_id',
+    'get_vpc_id',
+    'set_vpc_id',
+    'get_task_definition_arn',
+    'set_task_definition_arn',
+    'get_task_role_arn',
+    'set_task_role_arn',
+    'get_ecr_repo',
+    'set_ecr_repo',
+    'get_cluster_name',
+    'set_cluster_name',
+    'get_scheduler_lambda_arn',
+    'set_scheduler_lambda_arn',
+    'is_initialized',
+    'set_initialized',
+    'get_environment',
+    'save_environment',
+    'clear_environment_config',
+    'get_environments',
+    'validate_env_config',
+    
+    # Infrastructure functions
+    'create_infrastructure',
+    'destroy_infrastructure',
+    'rebuild_infrastructure',
+    
+    # Scheduler functions
+    'create_scheduled_job',
+    'list_scheduled_jobs',
+    'delete_scheduled_job'
+]
 
 ###############################################################################
