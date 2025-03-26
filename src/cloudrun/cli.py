@@ -11,6 +11,10 @@ from botocore.exceptions import ClientError
 from .infrastructure import create_infrastructure
 from .infrastructure import destroy_infrastructure
 from .scheduler import create_scheduled_job, list_scheduled_jobs, delete_scheduled_job
+from cloudrun.dynamo_config import (
+    get_cluster_name,
+    list_environments,
+)
 
 def get_aws_session(profile: Optional[str] = None) -> boto3.Session:
     """Configure and return an AWS session with the given profile."""
@@ -412,49 +416,76 @@ def tasks(ctx, env):
 @tasks.command(name='list')
 @click.pass_context
 def list_tasks(ctx):
-    """List all running tasks."""
+    """List all running tasks across all environments."""
     try:
         session = get_aws_session()
         ecs = session.client('ecs')
         
-        # Get cluster name from environment configuration
-        cluster_name = get_cluster_name(ctx.obj['env'])
-        if not cluster_name:
-            click.echo("Error: No cluster name found. Please run 'cloudrun setup' first.")
-            sys.exit(1)
-        
-        # List tasks in the cluster
-        response = ecs.list_tasks(
-            cluster=cluster_name,
-            desiredStatus='RUNNING'
-        )
-        
-        if not response.get('taskArns'):
-            click.echo("No running tasks found.")
+        # Get all environments
+        environments = list_environments()
+        if not environments:
+            click.echo("No environments found. Run 'cloudrun setup' to create your first environment.")
             return
             
-        # Get detailed task information
-        tasks = ecs.describe_tasks(
-            cluster=cluster_name,
-            tasks=response['taskArns']
-        )
-        
-        click.echo("\nRunning Tasks:")
-        click.echo("=" * 80)
-        
-        for task in tasks['tasks']:
-            # Get task ID from environment variables
-            task_id = next(
-                (env['value'] for env in task['overrides']['containerOverrides'][0]['environment']
-                 if env['name'] == 'CLOUDRUN_TASK_ID'),
-                'unknown'
+        found_tasks = False
+        for env_name in environments:
+            # Get cluster name from environment configuration
+            cluster_name = get_cluster_name(env_name)
+            if not cluster_name:
+                continue
+                
+            # List tasks in the cluster
+            response = ecs.list_tasks(
+                cluster=cluster_name,
+                desiredStatus='RUNNING'
             )
             
-            click.echo(f"Task ID: {task_id}")
-            click.echo(f"Task ARN: {task['taskArn']}")
-            click.echo(f"Status: {task['lastStatus']}")
-            click.echo(f"Started At: {task['startedAt']}")
-            click.echo("=" * 80)
+            if not response.get('taskArns'):
+                continue
+                
+            # Get detailed task information
+            tasks = ecs.describe_tasks(
+                cluster=cluster_name,
+                tasks=response['taskArns']
+            )
+            
+            # Get task definitions to filter by CloudRun prefix
+            task_definitions = {}
+            for task in tasks['tasks']:
+                task_def_arn = task['taskDefinitionArn']
+                if task_def_arn not in task_definitions:
+                    task_def = ecs.describe_task_definition(taskDefinition=task_def_arn)
+                    task_definitions[task_def_arn] = task_def['taskDefinition']
+            
+            # Process tasks for this environment
+            for task in tasks['tasks']:
+                task_def = task_definitions[task['taskDefinitionArn']]
+                
+                # Only show tasks with CloudRun prefix in family name
+                if not task_def['family'].startswith('cloudrun'):
+                    continue
+                    
+                if not found_tasks:
+                    click.echo("\nRunning CloudRun Tasks:")
+                    click.echo("=" * 80)
+                    found_tasks = True
+                
+                # Get task ID from environment variables
+                task_id = next(
+                    (env['value'] for env in task['overrides']['containerOverrides'][0]['environment']
+                     if env['name'] == 'CLOUDRUN_TASK_ID'),
+                    'unknown'
+                )
+                
+                click.echo(f"Environment: {env_name}")
+                click.echo(f"Task ID: {task_id}")
+                click.echo(f"Task ARN: {task['taskArn']}")
+                click.echo(f"Status: {task['lastStatus']}")
+                click.echo(f"Started At: {task['startedAt']}")
+                click.echo("=" * 80)
+            
+        if not found_tasks:
+            click.echo("No running CloudRun tasks found in any environment.")
             
     except Exception as e:
         click.echo(f"Error listing tasks: {str(e)}", err=True)
@@ -469,47 +500,59 @@ def cancel_task(ctx, task_id):
         session = get_aws_session()
         ecs = session.client('ecs')
         
-        # Get cluster name from environment configuration
-        cluster_name = get_cluster_name(ctx.obj['env'])
-        if not cluster_name:
-            click.echo("Error: No cluster name found. Please run 'cloudrun setup' first.")
-            sys.exit(1)
-        
-        # Find the task ARN by task ID
-        response = ecs.list_tasks(
-            cluster=cluster_name,
-            desiredStatus='RUNNING'
-        )
-        
-        if not response.get('taskArns'):
-            click.echo("No running tasks found.")
+        # Get all environments
+        environments = list_environments()
+        if not environments:
+            click.echo("No environments found. Run 'cloudrun setup' to create your first environment.")
             return
             
-        # Get detailed task information
-        tasks = ecs.describe_tasks(
-            cluster=cluster_name,
-            tasks=response['taskArns']
-        )
-        
-        # Find task with matching task ID
+        # Search for task across all environments
         target_task = None
-        for task in tasks['tasks']:
-            task_env_id = next(
-                (env['value'] for env in task['overrides']['containerOverrides'][0]['environment']
-                 if env['name'] == 'CLOUDRUN_TASK_ID'),
-                None
+        target_cluster = None
+        
+        for env_name in environments:
+            # Get cluster name from environment configuration
+            cluster_name = get_cluster_name(env_name)
+            if not cluster_name:
+                continue
+                
+            # List tasks in the cluster
+            response = ecs.list_tasks(
+                cluster=cluster_name,
+                desiredStatus='RUNNING'
             )
-            if task_env_id == task_id:
-                target_task = task
+            
+            if not response.get('taskArns'):
+                continue
+                
+            # Get detailed task information
+            tasks = ecs.describe_tasks(
+                cluster=cluster_name,
+                tasks=response['taskArns']
+            )
+            
+            # Find task with matching task ID
+            for task in tasks['tasks']:
+                task_env_id = next(
+                    (env['value'] for env in task['overrides']['containerOverrides'][0]['environment']
+                     if env['name'] == 'CLOUDRUN_TASK_ID'),
+                    None
+                )
+                if task_env_id == task_id:
+                    target_task = task
+                    target_cluster = cluster_name
+                    break
+                    
+            if target_task:
                 break
                 
         if not target_task:
-            click.echo(f"Task with ID {task_id} not found.")
+            click.echo(f"Task with ID {task_id} not found in any environment.")
             return
             
         # Stop the task
         ecs.stop_task(
-            cluster=cluster_name,
+            cluster=target_cluster,
             task=target_task['taskArn']
         )
         
@@ -518,6 +561,21 @@ def cancel_task(ctx, task_id):
     except Exception as e:
         click.echo(f"Error cancelling task: {str(e)}", err=True)
         sys.exit(1)
+
+@cli.command()
+def environments():
+    """List all available environments."""
+    environments = list_environments()
+    
+    if not environments:
+        click.echo("No environments found. Run 'cloudrun setup' to create your first environment.")
+        return
+        
+    click.echo("\nAvailable environments:")
+    click.echo("=" * 80)
+    for env_name in environments:
+        click.echo(f"  - {env_name}")
+    click.echo("=" * 80)
 
 def main():
     cli(obj={})

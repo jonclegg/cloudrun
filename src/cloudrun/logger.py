@@ -4,6 +4,13 @@ import boto3
 from botocore.exceptions import ClientError
 from typing import Optional
 
+# Suppress debug messages from HTTP clients
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+logging.getLogger('requests').setLevel(logging.WARNING)
+
 class CloudWatchHandler(logging.Handler):
     """A logging handler that sends logs to CloudWatch."""
     
