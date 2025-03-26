@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from botocore.exceptions import ClientError
-from . import (
+from .dynamo_config import (
     get_region,
     get_bucket_name,
     get_subnet_id,

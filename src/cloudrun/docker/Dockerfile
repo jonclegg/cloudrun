@@ -26,8 +26,10 @@ RUN pip install --no-cache-dir \
 
 # Copy the package files
 COPY src /app/src
-COPY setup.py /app/
 COPY pyproject.toml /app/
+
+# Install the package
+RUN pip install .
 
 # Copy entrypoint script
 COPY src/cloudrun/docker/entrypoint.sh /entrypoint.sh
@@ -37,11 +39,5 @@ RUN chmod +x /entrypoint.sh
 COPY additional_requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/additional_requirements.txt && \
     rm /tmp/additional_requirements.txt
-
-# Install build dependencies first
-RUN pip install --no-cache-dir setuptools wheel
-
-# Install the package
-RUN pip install --no-cache-dir .
 
 ENTRYPOINT ["/entrypoint.sh"] 

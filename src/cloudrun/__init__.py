@@ -4,7 +4,7 @@ import zipfile
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
-from .dynamo_config import (
+from cloudrun.dynamo_config import (
     get_config_value,
     set_config_value,
     get_environment_config,
@@ -14,7 +14,14 @@ from .dynamo_config import (
     list_environments,
     create_dynamo_table,
     set_user_params,
-    check_initialization
+    check_initialization,
+    get_region,
+    get_bucket_name,
+    get_subnet_id,
+    get_vpc_id,
+    get_task_definition_arn,
+    get_task_role_arn,
+    get_ecr_repo,
 )
 import json
 import uuid
@@ -148,7 +155,8 @@ def create_and_upload_zip(script_path: str, exclude_paths: Optional[list[str]], 
                         print(f"Added {file_path} to zip file {size}")
     
     s3_key = f"jobs/{os.path.basename(script_path)}/{zip_path.name}"
-    s3 = boto3.client('s3', region_name=get_region(env_name))
+    region = get_region(env_name)
+    s3 = boto3.client('s3', region_name=region)
     s3.upload_file(str(zip_path), get_bucket_name(env_name), s3_key)
     
     zip_path.unlink()
@@ -325,42 +333,6 @@ def wait_for_task_completion(task_id: str, env_name: str = 'default', poll_inter
 
 __all__ = [
     # Configuration functions
-    'get_region',
-    'set_region',
-    'get_bucket_name',
-    'set_bucket_name',
-    'get_subnet_id',
-    'set_subnet_id',
-    'get_vpc_id',
-    'set_vpc_id',
-    'get_task_definition_arn',
-    'set_task_definition_arn',
-    'get_task_role_arn',
-    'set_task_role_arn',
-    'get_ecr_repo',
-    'set_ecr_repo',
-    'get_cluster_name',
-    'set_cluster_name',
-    'get_scheduler_lambda_arn',
-    'set_scheduler_lambda_arn',
-    'is_initialized',
-    'set_initialized',
-    'get_environment',
-    'save_environment',
-    'clear_environment_config',
-    'get_environments',
-    'validate_env_config',
-    
-    # Infrastructure functions
-    'create_infrastructure',
-    'destroy_infrastructure',
-    'rebuild_infrastructure',
-    
-    # Scheduler functions
-    'create_scheduled_job',
-    'list_scheduled_jobs',
-    'delete_scheduled_job',
-    
     # Task functions
     'run',
     'wait_for_task_completion'

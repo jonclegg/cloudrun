@@ -402,20 +402,30 @@ def delete_scheduled_job_command(name):
         sys.exit(1)
 
 @cli.group()
-def tasks():
+@click.option('--env', default='default', help='Environment name (default: default)')
+@click.pass_context
+def tasks(ctx, env):
     """Manage running tasks"""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['env'] = env
 
 @tasks.command(name='list')
-def list_tasks():
+@click.pass_context
+def list_tasks(ctx):
     """List all running tasks."""
     try:
         session = get_aws_session()
         ecs = session.client('ecs')
         
+        # Get cluster name from environment configuration
+        cluster_name = get_cluster_name(ctx.obj['env'])
+        if not cluster_name:
+            click.echo("Error: No cluster name found. Please run 'cloudrun setup' first.")
+            sys.exit(1)
+        
         # List tasks in the cluster
         response = ecs.list_tasks(
-            cluster='cloudrun-cluster',
+            cluster=cluster_name,
             desiredStatus='RUNNING'
         )
         
@@ -425,7 +435,7 @@ def list_tasks():
             
         # Get detailed task information
         tasks = ecs.describe_tasks(
-            cluster='cloudrun-cluster',
+            cluster=cluster_name,
             tasks=response['taskArns']
         )
         
@@ -452,15 +462,22 @@ def list_tasks():
 
 @tasks.command(name='cancel')
 @click.option('--task-id', required=True, help='Task ID to cancel')
-def cancel_task(task_id):
+@click.pass_context
+def cancel_task(ctx, task_id):
     """Cancel a running task."""
     try:
         session = get_aws_session()
         ecs = session.client('ecs')
         
+        # Get cluster name from environment configuration
+        cluster_name = get_cluster_name(ctx.obj['env'])
+        if not cluster_name:
+            click.echo("Error: No cluster name found. Please run 'cloudrun setup' first.")
+            sys.exit(1)
+        
         # Find the task ARN by task ID
         response = ecs.list_tasks(
-            cluster='cloudrun-cluster',
+            cluster=cluster_name,
             desiredStatus='RUNNING'
         )
         
@@ -470,7 +487,7 @@ def cancel_task(task_id):
             
         # Get detailed task information
         tasks = ecs.describe_tasks(
-            cluster='cloudrun-cluster',
+            cluster=cluster_name,
             tasks=response['taskArns']
         )
         
@@ -492,7 +509,7 @@ def cancel_task(task_id):
             
         # Stop the task
         ecs.stop_task(
-            cluster='cloudrun-cluster',
+            cluster=cluster_name,
             task=target_task['taskArn']
         )
         

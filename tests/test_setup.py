@@ -1,7 +1,6 @@
 import os
 import pytest
 import boto3
-from cloudrun.setup import create_infrastructure, destroy_infrastructure
 from cloudrun.dynamo_config import get_config_value, clear_environment
 
 ###############################################################################

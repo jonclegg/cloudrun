@@ -11,7 +11,7 @@ import tempfile
 import zipfile
 import uuid
 import logging
-from .dynamo_config import (
+from cloudrun.dynamo_config import (
     get_config_value,
     set_config_value,
     validate_environment,
@@ -209,13 +209,11 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
         os.makedirs(cloudrun_dir, exist_ok=True)
         
         root_dir = os.path.dirname(os.path.dirname(current_dir))
-        setup_py = os.path.join(root_dir, 'setup.py')
         pyproject_toml = os.path.join(root_dir, 'pyproject.toml')
         
         if not os.path.exists(pyproject_toml):
             raise FileNotFoundError(f"pyproject.toml not found at {pyproject_toml}")
             
-        shutil.copy2(setup_py, temp_dir)
         shutil.copy2(pyproject_toml, temp_dir)
         print("Copied package configuration files")
         
@@ -226,7 +224,6 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
             'logger.py',
             'infrastructure.py',
             'scheduler.py',
-            'config.py',
             'dynamo_config.py'
         ]
         
@@ -1079,12 +1076,14 @@ def _check_infrastructure_changes(env_name: str, region: str, **kwargs) -> bool:
     Returns:
         bool: True if parameters have changed, False otherwise
     """
+
+    if kwargs.get('force_rebuild'):
+        return True
+
     # Get current parameters
     current_params = {
         'CLOUDRUN_REGION': region,
         'CLOUDRUN_ADDITIONAL_POLICIES': kwargs.get('additional_policies', []),
-        'CLOUDRUN_VPC_ID': kwargs.get('vpc_id'),
-        'CLOUDRUN_SUBNET_ID': kwargs.get('subnet_id'),
         'CLOUDRUN_ADDITIONAL_REQUIREMENTS_TEXT': kwargs.get('additional_requirements_text'),
         'CLOUDRUN_ADDITIONAL_REQUIREMENTS_PATH': kwargs.get('additional_requirements_path'),
         'CLOUDRUN_CUSTOM_DOCKER_COMMANDS': kwargs.get('custom_docker_commands')
@@ -1118,6 +1117,7 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
             - additional_requirements_text: Optional string containing additional Python package requirements
             - additional_requirements_path: Optional path to a requirements.txt file
             - custom_docker_commands: Optional string containing custom Docker commands to insert into the Dockerfile
+            - force_rebuild: Optional boolean to force a rebuild of the infrastructure
     
     Returns:
         Dict[str, Any]: Dictionary containing created resource information
@@ -1137,8 +1137,6 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
     # Initialize AWS clients
     aws_clients = _initialize_aws_clients(region)
     
-    set_user_params(kwargs, env_name)
-
     # Check if infrastructure parameters have changed
     if check_initialization(env_name):
         if not _check_infrastructure_changes(env_name, region, **kwargs):
@@ -1159,6 +1157,9 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
             print(f"Infrastructure parameters have changed for environment '{env_name}', destroying existing infrastructure...")
             destroy_infrastructure(env_name)
     
+    set_user_params(kwargs, env_name)
+
+
     bucket_name = f"cloudrun-bucket-{env_name}-{region}"
     set_bucket_name(bucket_name, env_name)
 
