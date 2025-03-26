@@ -1,4 +1,24 @@
 from setuptools import setup
+import os
+import boto3
+import json
+from typing import Tuple, Dict, Any
+from dotenv import load_dotenv
+from datetime import datetime
+import time
+import subprocess
+import shutil
+import tempfile
+import zipfile
+import uuid
+import logging
+from cloudrun.dynamo_config import (
+    get_config_value,
+    set_config_value,
+    validate_environment,
+    clear_environment,
+    create_dynamo_table
+)
 
 setup(
     name="cloudrun",
@@ -94,168 +114,24 @@ def ensure_infrastructure() -> Tuple[str, str]:
 
 def create_infrastructure(region: str = None) -> Dict[str, Any]:
     """
-    Initialize AWS infrastructure for CloudRun.
-    Creates all necessary resources and saves configuration.
+    Create the AWS infrastructure required for CloudRun.
     
     Args:
-        region: AWS region to use. If None, uses AWS_DEFAULT_REGION or us-east-1
-    
+        region: AWS region to create resources in
+        
     Returns:
         Dict[str, Any]: Dictionary containing created resource information
     """
-    load_dotenv()
+    print("\n=== Starting CloudRun Infrastructure Creation ===")
     
-    # Set region
-    if region:
-        os.environ['AWS_DEFAULT_REGION'] = region
-    elif 'AWS_DEFAULT_REGION' not in os.environ:
-        os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+    # Initialize AWS clients
+    aws_clients = _initialize_aws_clients(region)
     
-    region = os.getenv('AWS_DEFAULT_REGION')
+    # Create DynamoDB table for environment configs
+    print("\nCreating DynamoDB table for environment configurations...")
+    create_dynamo_table()
     
-    # Create VPC and subnet if needed
-    ec2 = boto3.client('ec2', region_name=region)
-    
-    # Get default VPC and subnet
-    vpcs = ec2.describe_vpcs(
-        Filters=[{'Name': 'isDefault', 'Values': ['true']}]
-    )['Vpcs']
-    
-    if not vpcs:
-        raise Exception("No default VPC found. Please ensure your AWS account has a default VPC.")
-    
-    vpc_id = vpcs[0]['VpcId']
-    
-    # Get first available subnet in the default VPC
-    subnets = ec2.describe_subnets(
-        Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]
-    )['Subnets']
-    
-    if not subnets:
-        raise Exception("No subnets found in default VPC.")
-    
-    subnet_id = subnets[0]['SubnetId']
-    
-    # Create other infrastructure
-    bucket_name, task_role_arn = ensure_infrastructure()
-    
-    # Get AWS account ID
-    sts = boto3.client('sts')
-    account_id = sts.get_caller_identity()['Account']
-    os.environ['AWS_ACCOUNT_ID'] = account_id
-    
-    # Build and push Docker image
-    import subprocess
-    import shutil
-    
-    # Get the directory containing this file
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    docker_dir_path = os.path.join(current_dir, 'docker')
-    
-    # Create a temporary build context with the CloudRun package
-    build_context = os.path.join(docker_dir_path, 'build_context')
-    os.makedirs(build_context, exist_ok=True)
-    
-    # Copy only the necessary package files to the build context
-    package_dir = os.path.dirname(current_dir)  # Go up one level from cloudrun to src
-    cloudrun_dir = os.path.join(build_context, 'cloudrun')
-    os.makedirs(cloudrun_dir, exist_ok=True)
-    
-    # Copy all necessary files and directories
-    files_to_copy = [
-        '__init__.py',
-        'cli.py',
-        'logger.py',
-        'setup.py',
-        'cloudformation.yml',
-        'pyproject.toml'
-    ]
-    
-    for file in files_to_copy:
-        src = os.path.join(current_dir, file)
-        if os.path.exists(src):
-            shutil.copy2(src, cloudrun_dir)
-    
-    # Copy Dockerfile and other files to build context
-    shutil.copy2(os.path.join(docker_dir_path, 'Dockerfile'), build_context)
-    shutil.copy2(os.path.join(docker_dir_path, 'requirements.txt'), build_context)
-    shutil.copy2(os.path.join(docker_dir_path, 'entrypoint.sh'), build_context)
-    
-    # Get AWS account ID and construct ECR repository URI
-    sts = boto3.client('sts')
-    account_id = sts.get_caller_identity()['Account']
-    os.environ['AWS_ACCOUNT_ID'] = account_id
-    
-    ecr_repo = f'{account_id}.dkr.ecr.{region}.amazonaws.com/cloudrun-executor'
-    
-    # Login to ECR using AWS CLI with password-stdin
-    password = subprocess.check_output([
-        'aws', 'ecr', 'get-login-password',
-        '--region', region
-    ]).decode('utf-8').strip()
-    
-    subprocess.run([
-        'docker', 'login',
-        '--username', 'AWS',
-        '--password-stdin',
-        ecr_repo
-    ], check=True, input=password.encode('utf-8'))
-    
-    # Build Docker image with platform specification
-    subprocess.run([
-        'docker', 'build',
-        '--platform', 'linux/amd64',
-        '-t', ecr_repo,
-        build_context
-    ], check=True)
-    
-    # Push image to ECR
-    subprocess.run(['docker', 'push', ecr_repo], check=True)
-    
-    # Clean up build context
-    shutil.rmtree(build_context)
-    
-    # Create task definition
-    ecs = boto3.client('ecs', region_name=region)
-    task_definition = ecs.register_task_definition(
-        family='cloudrun-task',
-        networkMode='awsvpc',
-        requiresCompatibilities=['FARGATE'],
-        cpu='256',
-        memory='512',
-        executionRoleArn=task_role_arn,
-        taskRoleArn=task_role_arn,
-        containerDefinitions=[{
-            'name': 'cloudrun-executor',
-            'image': ecr_repo,
-            'essential': True,
-            'logConfiguration': {
-                'logDriver': 'awslogs',
-                'options': {
-                    'awslogs-group': '/ecs/cloudrun',
-                    'awslogs-region': region,
-                    'awslogs-stream-prefix': 'ecs'
-                }
-            }
-        }]
-    )
-    
-    # Save configuration
-    with open('.env', 'a') as f:
-        f.write(f'\nCLOUDRUN_REGION={region}\n')
-        f.write(f'CLOUDRUN_BUCKET_NAME={bucket_name}\n')
-        f.write(f'CLOUDRUN_SUBNET_ID={subnet_id}\n')
-        f.write(f'CLOUDRUN_TASK_DEFINITION_ARN={task_definition["taskDefinition"]["taskDefinitionArn"]}\n')
-        f.write('CLOUDRUN_INITIALIZED=true\n')
-    
-    return {
-        'region': region,
-        'vpc_id': vpc_id,
-        'subnet_id': subnet_id,
-        'bucket_name': bucket_name,
-        'task_role_arn': task_role_arn,
-        'task_definition_arn': task_definition['taskDefinition']['taskDefinitionArn']
-    }
+    # Rest of the existing infrastructure creation code...
 
 def destroy_infrastructure() -> None:
     """

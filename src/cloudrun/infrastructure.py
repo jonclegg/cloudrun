@@ -11,13 +11,13 @@ import tempfile
 import zipfile
 import uuid
 import logging
-from .config import (
+from .dynamo_config import (
     get_config_value,
     set_config_value,
     validate_environment,
     clear_environment,
-)
-from . import (
+    create_dynamo_table,
+    set_user_params,
     set_region,
     set_bucket_name,
     set_subnet_id,
@@ -49,7 +49,8 @@ def _initialize_aws_clients(region: str) -> Dict[str, Any]:
         'ecs': boto3.client('ecs', region_name=region),
         'ecr': boto3.client('ecr', region_name=region),
         'logs': boto3.client('logs', region_name=region),
-        'ec2': boto3.client('ec2', region_name=region)
+        'ec2': boto3.client('ec2', region_name=region),
+        'dynamodb': boto3.client('dynamodb', region_name=region)
     }
 
 ###############################################################################
@@ -225,7 +226,8 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
             'logger.py',
             'infrastructure.py',
             'scheduler.py',
-            'config.py'
+            'config.py',
+            'dynamo_config.py'
         ]
         
         for file in files_to_copy:
@@ -1122,25 +1124,40 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
     """
     print(f"\n=== Starting CloudRun Infrastructure Creation for environment '{env_name}' ===")
     
+
     # Set region
     if region:
         set_region(region, env_name)
     else:
         region = get_config_value('CLOUDRUN_REGION', env_name, 'us-east-1')
         set_region(region, env_name)
-    
+
     print(f"Using AWS region: {region}")
     
+    # Initialize AWS clients
+    aws_clients = _initialize_aws_clients(region)
+    
+    set_user_params(kwargs, env_name)
+
     # Check if infrastructure parameters have changed
     if check_initialization(env_name):
         if not _check_infrastructure_changes(env_name, region, **kwargs):
             print(f"Infrastructure parameters unchanged for environment '{env_name}', skipping creation.")
+            return {
+                'CLOUDRUN_REGION': region,
+                'CLOUDRUN_BUCKET_NAME': get_config_value('CLOUDRUN_BUCKET_NAME', env_name),
+                'CLOUDRUN_SUBNET_ID': get_config_value('CLOUDRUN_SUBNET_ID', env_name),
+                'CLOUDRUN_VPC_ID': get_config_value('CLOUDRUN_VPC_ID', env_name),
+                'CLOUDRUN_TASK_DEFINITION_ARN': get_config_value('CLOUDRUN_TASK_DEFINITION_ARN', env_name),
+                'CLOUDRUN_TASK_FAMILY': get_config_value('CLOUDRUN_TASK_FAMILY', env_name),
+                'CLOUDRUN_TASK_ROLE_ARN': get_config_value('CLOUDRUN_TASK_ROLE_ARN', env_name),
+                'CLOUDRUN_ECR_REPO': get_config_value('CLOUDRUN_ECR_REPO', env_name),
+                'CLOUDRUN_CLUSTER_NAME': get_config_value('CLOUDRUN_CLUSTER_NAME', env_name),
+                'CLOUDRUN_SCHEDULER_LAMBDA_ARN': get_config_value('CLOUDRUN_SCHEDULER_LAMBDA_ARN', env_name),
+            }
         else:
             print(f"Infrastructure parameters have changed for environment '{env_name}', destroying existing infrastructure...")
             destroy_infrastructure(env_name)
-    
-    # Initialize AWS clients
-    aws_clients = _initialize_aws_clients(region)
     
     bucket_name = f"cloudrun-bucket-{env_name}-{region}"
     set_bucket_name(bucket_name, env_name)

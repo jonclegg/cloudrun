@@ -38,7 +38,10 @@ COPY additional_requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/additional_requirements.txt && \
     rm /tmp/additional_requirements.txt
 
+# Install build dependencies first
+RUN pip install --no-cache-dir setuptools wheel
+
 # Install the package
-RUN pip install .
+RUN pip install --no-cache-dir .
 
 ENTRYPOINT ["/entrypoint.sh"] 
