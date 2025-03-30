@@ -13,6 +13,7 @@ from .dynamo_config import (
     get_task_definition_arn,
     get_scheduler_lambda_arn
 )
+from . import create_and_upload_zip
 
 ###############################################################################
 
@@ -42,62 +43,14 @@ def _get_cloudrun_lambda_target(env_name: str = 'default'):
 
 ###############################################################################
 
-def _create_and_upload_zip(script_path: str, env_name: str = 'default') -> str:
-    """
-    Creates a zip file of the project and uploads it to S3.
-    
-    Args:
-        script_path: Path to the script being run
-        env_name: Name of the environment
-    
-    Returns:
-        str: S3 key where the zip was uploaded
-    """
-    bucket_name = get_bucket_name(env_name)
-    if not bucket_name:
-        raise RuntimeError(f"CLOUDRUN_BUCKET_NAME not set for environment '{env_name}'. Please run create_infrastructure() first.")
-
-    default_excludes = {'.venv/', 'venv/', '__pycache__/', '*.pyc', ".git/"}
-    
-    with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
-        zip_path = Path(tmp.name)
-    
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk('.'):
-            if any(pattern in root for pattern in default_excludes):
-                continue
-                
-            for file in files:
-                if file != zip_path.name and not file.startswith('.'):
-                    file_path = os.path.join(root, file)
-                    if any(pattern in file_path for pattern in default_excludes):
-                        continue
-                    arcname = os.path.relpath(file_path, '.')
-                    zipf.write(file_path, arcname)
-    
-    # Generate S3 key with a timestamp to ensure uniqueness
-    s3_key = f"scheduled_jobs/{env_name}/{os.path.basename(script_path)}/{os.path.basename(zip_path.name)}"
-    
-    # Upload to S3
-    s3 = _get_s3_client(env_name)
-    s3.upload_file(str(zip_path), bucket_name, s3_key)
-    
-    # Clean up the temporary file
-    zip_path.unlink()
-    
-    return s3_key
-
-###############################################################################
-
 def create_scheduled_job(
     name: str,
-    script_path: str,
+    method_name: str,
     schedule: str,
     env_name: str = 'default',
     vcpus: float = 0.25,
     memory: int = 512,
     use_spot: bool = False,
-    method_name: Optional[str] = None,
     params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
@@ -105,21 +58,30 @@ def create_scheduled_job(
     
     Args:
         name: Name of the scheduled job
-        script_path: Path to the script to run
+        method_name: Name of the method to run (module.method format)
         schedule: Cron expression for the schedule
         env_name: Name of the environment to use (default: 'default')
         vcpus: Number of vCPUs to allocate (default: 0.25)
         memory: Amount of memory to allocate in MB (default: 512)
         use_spot: Whether to use spot instances (default: False)
-        method_name: Optional name of a specific method to run in the script
         params: Optional dictionary of parameters to pass to the method
         
     Returns:
         Dict[str, Any]: Information about the created scheduled job
     """
     # Validate inputs
-    if not name or not script_path or not schedule:
-        raise ValueError("name, script_path, and schedule are required")
+    if not name or not method_name or not schedule:
+        raise ValueError("name, method_name, and schedule are required")
+    
+    # Parse method name to get script path
+    if not '.' in method_name:
+        raise ValueError("method_name must be in module.method format (e.g. 'main.my_method')")
+    
+    module_path, function_name = method_name.rsplit('.', 1)
+    script_path = f"{module_path}.py"
+    
+    if not os.path.exists(script_path):
+        raise FileNotFoundError(f"Module not found: {script_path}")
     
     # Get required configuration
     bucket_name = get_bucket_name(env_name)
@@ -133,14 +95,8 @@ def create_scheduled_job(
             "Please run create_infrastructure() first"
         )
     
-    # Upload script to S3
-    s3_client = _get_s3_client(env_name)
-    script_key = f'scripts/{env_name}/{name}/{os.path.basename(script_path)}'
-    
-    try:
-        s3_client.upload_file(script_path, bucket_name, script_key)
-    except ClientError as e:
-        raise RuntimeError(f"Failed to upload script to S3: {str(e)}")
+    # Create zip file and upload it to S3
+    zip_key = create_and_upload_zip(script_path, None, False, env_name)
     
     # Create EventBridge rule
     events_client = _get_events_client(env_name)
@@ -152,19 +108,44 @@ def create_scheduled_job(
         'vcpus': vcpus,
         'memory': memory,
         'use_spot': use_spot,
-        's3_key': script_key,
-        'env_name': env_name
+        'zip_key': zip_key,
+        'env_name': env_name,
+        'method_name': method_name
     }
     
-    if method_name:
-        target_input['method_name'] = method_name
     if params:
         target_input['params'] = params
     
+    # Format cron expression properly for AWS EventBridge
+    # AWS EventBridge cron requires 6 fields: minutes hours day-of-month month day-of-week year
+    schedule_expression = schedule.strip()
+    
+    # If user provided full cron expression with 'cron()' wrapper, extract just the expression
+    if schedule_expression.startswith('cron(') and schedule_expression.endswith(')'):
+        schedule_expression = schedule_expression[5:-1]
+    
+    # Validate that the expression has the right number of fields (6)
+    fields = schedule_expression.split()
+    if len(fields) != 6:
+        raise ValueError(
+            f"Invalid cron expression: '{schedule_expression}'. AWS EventBridge cron expressions must have 6 fields: "
+            "minute hour day-of-month month day-of-week year. Example: '0 12 * * ? *'"
+        )
+    
+    # Ensure day-of-month and day-of-week aren't both specified with values other than ?
+    day_of_month = fields[2]
+    day_of_week = fields[4]
+    if day_of_month != '?' and day_of_week != '?':
+        if day_of_month != '*' and day_of_week != '*':
+            raise ValueError(
+                f"Invalid cron expression: If day-of-month is specified, day-of-week must be '?' or vice versa. "
+                f"Current values: day-of-month='{day_of_month}', day-of-week='{day_of_week}'"
+            )
+
     try:
         response = events_client.put_rule(
             Name=rule_name,
-            ScheduleExpression=f'cron({schedule})',
+            ScheduleExpression=f'cron({schedule_expression})',
             State='ENABLED',
             Description=f'CloudRun scheduled job: {name} in environment {env_name}',
             Tags=[{'Key': 'cloudrun', 'Value': 'true'}, {'Key': 'environment', 'Value': env_name}]
@@ -188,11 +169,11 @@ def create_scheduled_job(
             'rule_arn': rule_arn,
             'schedule': schedule,
             'script_path': script_path,
-            'script_key': script_key,
+            'zip_key': zip_key,
             'vcpus': vcpus,
             'memory': memory,
             'use_spot': use_spot,
-            'method_name': method_name,
+            'method_name': function_name,
             'params': params
         }
         
@@ -227,19 +208,21 @@ def list_scheduled_jobs(env_name: str = 'default') -> List[Dict[str, Any]]:
             
             if targets:
                 target_input = json.loads(targets[0]['Input'])
-                jobs.append({
+                job_info = {
                     'name': rule['Name'].replace(f'cloudrun-{env_name}-', ''),
                     'environment': env_name,
                     'rule_arn': rule['Arn'],
                     'schedule': rule['ScheduleExpression'].replace('cron(', '').replace(')', ''),
-                    'script_path': target_input['script_path'],
-                    'script_key': target_input['s3_key'],
-                    'vcpus': target_input['vcpus'],
-                    'memory': target_input['memory'],
-                    'use_spot': target_input['use_spot'],
+                    'script_path': target_input.get('script_path'),
+                    'vcpus': target_input.get('vcpus'),
+                    'memory': target_input.get('memory'),
+                    'use_spot': target_input.get('use_spot'),
                     'method_name': target_input.get('method_name'),
-                    'params': target_input.get('params')
-                })
+                    'params': target_input.get('params'),
+                    'zip_key': target_input.get('zip_key')
+                }
+                
+                jobs.append(job_info)
         
         return jobs
         

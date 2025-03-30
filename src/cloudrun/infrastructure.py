@@ -201,6 +201,18 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
     """Build and push Docker image to ECR."""
     print("\nPreparing Docker build context...")
     
+    # Check if Docker daemon is running before proceeding
+    try:
+        subprocess.run(['docker', 'info'], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError:
+        raise RuntimeError(
+            "\n========================================================================\n"
+            "ERROR: Cannot connect to the Docker daemon.\n"
+            "       Is Docker running? Please start Docker Desktop or the Docker service\n"
+            "       and try again.\n"
+            "========================================================================\n"
+        )
+    
     with tempfile.TemporaryDirectory() as temp_dir:
         print("Creating temporary build directory...")
         src_dir = os.path.join(temp_dir, 'src')
@@ -297,28 +309,42 @@ def _build_and_push_docker_image(ecr_repo: str, region: str, current_dir: str, d
         print("Copied Docker-related files")
         
         print("\nLogging into ECR...")
-        password = subprocess.check_output([
-            'aws', 'ecr', 'get-login-password',
-            '--region', region
-        ]).decode('utf-8').strip()
-        
-        subprocess.run([
-            'docker', 'login',
-            '--username', 'AWS',
-            '--password-stdin',
-            ecr_repo
-        ], check=True, input=password.encode('utf-8'))
-        
-        print("\nBuilding Docker image...")
-        subprocess.run([
-            'docker', 'build',
-            '--platform', 'linux/amd64',
-            '-t', ecr_repo,
-            temp_dir
-        ], check=True)
-        
-        print("\nPushing Docker image to ECR...")
-        subprocess.run(['docker', 'push', ecr_repo], check=True)
+        try:
+            password = subprocess.check_output([
+                'aws', 'ecr', 'get-login-password',
+                '--region', region
+            ]).decode('utf-8').strip()
+            
+            subprocess.run([
+                'docker', 'login',
+                '--username', 'AWS',
+                '--password-stdin',
+                ecr_repo
+            ], check=True, input=password.encode('utf-8'))
+            
+            print("\nBuilding Docker image...")
+            subprocess.run([
+                'docker', 'build',
+                '--platform', 'linux/amd64',
+                '-t', ecr_repo,
+                temp_dir
+            ], check=True)
+            
+            print("\nPushing Docker image to ECR...")
+            subprocess.run(['docker', 'push', ecr_repo], check=True)
+        except subprocess.CalledProcessError as e:
+            error_output = str(e.stderr) if e.stderr else str(e)
+            if "Cannot connect to the Docker daemon" in error_output:
+                raise RuntimeError("\nERROR: Cannot connect to the Docker daemon. Is Docker running? Please start Docker Desktop or the Docker service and try again.") from e
+            elif "permission denied" in error_output.lower():
+                raise RuntimeError("\nERROR: Permission denied when connecting to Docker. Make sure you have the right permissions and that Docker is running.") from e
+            else:
+                raise RuntimeError(f"\nERROR: Docker command failed. Please ensure Docker is running and properly configured: {error_output}") from e
+        except Exception as e:
+            if "docker" in str(e).lower():
+                raise RuntimeError(f"\nERROR: An unexpected Docker-related error occurred: {str(e)}\nPlease ensure Docker is installed, running, and properly configured.") from e
+            else:
+                raise
 
 ###############################################################################
 
@@ -406,7 +432,7 @@ def _delete_task_definitions(ecs_client, env_name: str) -> None:
 def _delete_iam_role(iam_client, env_name: str) -> None:
     """Delete IAM role and its attached policies."""
     print(f"\nDeleting IAM roles for environment '{env_name}'...")
-    roles_to_delete = ['cloudrun-task-role', f'cloudrun-lambda-role-{env_name}']
+    roles_to_delete = [f'cloudrun-task-role-{env_name}', f'cloudrun-lambda-role-{env_name}']
     
     for role_name in roles_to_delete:
         try:
@@ -550,8 +576,9 @@ def _create_lambda_execution_role(iam_client, role_name: str) -> Dict[str, Any]:
         )
         print("Added inline policy to Lambda role")
         
-        # Add a small delay to allow IAM role propagation
-        time.sleep(10)
+        # No static delay here - IAM role propagation is handled by retries in the calling function
+        # See _create_scheduler_lambda where it catches "The role defined for the function cannot be assumed by Lambda"
+        # errors and implements exponential backoff retries
         return lambda_role
         
     except iam_client.exceptions.EntityAlreadyExistsException:
@@ -573,13 +600,12 @@ def _create_lambda_execution_role(iam_client, role_name: str) -> Dict[str, Any]:
 
 ###############################################################################
 
-def _create_scheduler_lambda(iam_client, role_arn: str, region: str, env_name: str) -> Dict[str, Any]:
+def _create_scheduler_lambda(iam_client, region: str, env_name: str) -> Dict[str, Any]:
     """
     Create a Lambda function to execute scheduled jobs.
     
     Args:
         iam_client: IAM client
-        role_arn: Role ARN to use for the Lambda function
         region: AWS region
         env_name: Name of the environment
         
@@ -597,141 +623,10 @@ def _create_scheduler_lambda(iam_client, role_arn: str, region: str, env_name: s
     
     # Create a temporary directory for Lambda code
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create Lambda function code
-        lambda_code = '''
-import os
-import boto3
-import json
-import uuid
-import time
-import logging
-
-# Configure logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-def lambda_handler(event, context):
-    """
-    Lambda function to execute CloudRun jobs by launching ECS tasks directly.
-    
-    Args:
-        event: Event data containing job configuration
-        context: Lambda context
-        
-    Returns:
-        Dict[str, Any]: Job execution information
-    """
-    logger.info(f"CloudRun Scheduler Lambda invoked with event: {json.dumps(event)}")
-    
-    # Get job configuration from event
-    script_path = event.get('script_path')
-    vcpus = event.get('vcpus', 0.25)
-    memory = event.get('memory', 512)
-    use_spot = event.get('use_spot', False)
-    method_name = event.get('method_name')
-    params = event.get('params')
-    s3_key = event.get('s3_key')
-    
-    logger.info(f"Job configuration: script_path={script_path}, vcpus={vcpus}, memory={memory}, "
-                f"use_spot={use_spot}, method_name={method_name}, s3_key={s3_key}")
-    
-    # Get environment variables
-    bucket_name = os.environ.get('CLOUDRUN_BUCKET_NAME')
-    subnet_id = os.environ.get('CLOUDRUN_SUBNET_ID')
-    task_definition_arn = os.environ.get('CLOUDRUN_TASK_DEFINITION_ARN')
-    region = os.environ.get('CLOUDRUN_REGION', 'us-east-1')
-    
-    logger.info(f"Environment configuration: bucket_name={bucket_name}, subnet_id={subnet_id}, "
-                f"region={region}, task_definition_arn={task_definition_arn}")
-    
-    # Validate required parameters
-    if not all([bucket_name, subnet_id, task_definition_arn, script_path, s3_key]):
-        error_msg = "Missing required parameters. Ensure all environment variables and required event fields are set."
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    
-    # Calculate CPU units
-    cpu_units = str(int(vcpus * 1024))
-    logger.info(f"Calculated CPU units: {cpu_units}")
-    
-    # Generate a custom task ID with timestamp for uniqueness
-    custom_task_id = f"scheduled-task-{int(time.time())}-{str(uuid.uuid4())[:8]}"
-    logger.info(f"Generated task ID: {custom_task_id}")
-    
-    # Prepare command for the container
-    command = [bucket_name, s3_key, script_path]
-    if method_name:
-        command.append(method_name)
-    if params:
-        command.append(json.dumps(params))
-    
-    logger.info(f"Container command: {command}")
-    
-    # Prepare task parameters
-    task_params = {
-        'cluster': 'cloudrun-cluster',
-        'taskDefinition': task_definition_arn,
-        'networkConfiguration': {
-            'awsvpcConfiguration': {
-                'subnets': [subnet_id],
-                'assignPublicIp': 'ENABLED'
-            }
-        },
-        'overrides': {
-            'cpu': cpu_units,
-            'memory': str(memory),
-            'containerOverrides': [{
-                'name': 'cloudrun-executor',
-                'command': command,
-                'environment': [
-                    {
-                        'name': 'CLOUDRUN_TASK_ID',
-                        'value': custom_task_id
-                    }
-                ]
-            }]
-        }
-    }
-    
-    # Add spot configuration if requested
-    if use_spot:
-        task_params['capacityProviderStrategy'] = [{
-            'capacityProvider': 'FARGATE_SPOT',
-            'weight': 1
-        }]
-        logger.info("Using FARGATE_SPOT capacity provider")
-    else:
-        task_params['launchType'] = 'FARGATE'
-        logger.info("Using standard FARGATE launch type")
-    
-    # Run the task
-    try:
-        logger.info(f"Attempting to run ECS task with parameters: {json.dumps(task_params)}")
-        ecs = boto3.client('ecs', region_name=region)
-        response = ecs.run_task(**task_params)
-        
-        if response.get('tasks'):
-            task_arn = response['tasks'][0]['taskArn']
-            logger.info(f"Successfully started ECS task: {task_arn}")
-        else:
-            logger.warning(f"Task started but no task ARN returned. Full response: {json.dumps(response)}")
-            task_arn = None
-            
-        if response.get('failures'):
-            logger.error(f"Received failures when starting task: {json.dumps(response['failures'])}")
-    except Exception as e:
-        error_msg = f"Error running ECS task: {str(e)}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-    
-    result = {
-        'job_id': custom_task_id,
-        'task_arn': task_arn
-    }
-    
-    logger.info(f"Lambda execution completed successfully. Result: {json.dumps(result)}")
-    return result
-'''
+        # Read Lambda function template from file
+        lambda_template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lambda_function_template.py')
+        with open(lambda_template_path, 'r') as f:
+            lambda_code = f.read()
         
         # Write Lambda code to file
         lambda_file = os.path.join(temp_dir, 'lambda_function.py')
@@ -748,7 +643,7 @@ def lambda_handler(event, context):
             zip_bytes = f.read()
         
         # Create Lambda function
-        function_name = 'cloudrun-scheduler'
+        function_name = f'cloudrun-scheduler-{env_name}' # Use env-specific name
         
         # Try to update existing function first
         try:
@@ -775,7 +670,8 @@ def lambda_handler(event, context):
                                 'CLOUDRUN_BUCKET_NAME': get_config_value('CLOUDRUN_BUCKET_NAME', env_name),
                                 'CLOUDRUN_SUBNET_ID': get_config_value('CLOUDRUN_SUBNET_ID', env_name),
                                 'CLOUDRUN_TASK_DEFINITION_ARN': get_config_value('CLOUDRUN_TASK_DEFINITION_ARN', env_name),
-                                'CLOUDRUN_REGION': get_config_value('CLOUDRUN_REGION', env_name)
+                                'CLOUDRUN_REGION': get_config_value('CLOUDRUN_REGION', env_name),
+                                'CLOUDRUN_CLUSTER_NAME': get_cluster_name(env_name) # Pass cluster name
                             }
                         }
                     )
@@ -814,13 +710,14 @@ def lambda_handler(event, context):
                         Code={'ZipFile': zip_bytes},
                         Timeout=30,
                         MemorySize=128,
-                        Description='CloudRun Scheduler Lambda Function',
+                        Description=f'CloudRun Scheduler Lambda Function for {env_name}', # Add env to description
                         Environment={
                             'Variables': {
                                 'CLOUDRUN_BUCKET_NAME': get_bucket_name(env_name),
                                 'CLOUDRUN_SUBNET_ID': get_subnet_id(env_name),
                                 'CLOUDRUN_TASK_DEFINITION_ARN': get_task_definition_arn(env_name),
-                                'CLOUDRUN_REGION': get_region(env_name)
+                                'CLOUDRUN_REGION': get_region(env_name),
+                                'CLOUDRUN_CLUSTER_NAME': get_cluster_name(env_name) # Pass cluster name
                             }
                         }
                     )
@@ -865,101 +762,6 @@ def lambda_handler(event, context):
 
 ###############################################################################
 
-def _attach_scheduler_policies(iam_client, task_role_name: str) -> None:
-    """
-    Attach policies needed for scheduled jobs to the task role.
-    
-    Args:
-        iam_client: IAM client
-        task_role_name: Task role name
-    """
-    print("\nAttaching scheduler policies to task role...")
-    
-    # Create a policy for EventBridge to invoke Lambda
-    policy_name = f"{task_role_name}-scheduler-policy"
-    policy_document = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "events:PutRule",
-                    "events:PutTargets",
-                    "events:DeleteRule",
-                    "events:RemoveTargets",
-                    "events:ListRules",
-                    "events:ListTargetsByRule",
-                    "lambda:InvokeFunction",
-                    "ecs:RunTask",
-                    "ecs:DescribeTasks",
-                    "iam:PassRole",
-                    "s3:GetObject"
-                ],
-                "Resource": "*"
-            }
-        ]
-    }
-    
-    # Get account ID
-    account_id = boto3.client('sts').get_caller_identity()['Account']
-    policy_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
-    
-    try:
-        # Try to create a new policy
-        iam_client.create_policy(
-            PolicyName=policy_name,
-            PolicyDocument=json.dumps(policy_document)
-        )
-        print("Created scheduler policy")
-    except iam_client.exceptions.EntityAlreadyExistsException:
-        # If policy exists, always delete the oldest non-default version before creating a new one
-        print("Policy already exists, updating...")
-        
-        try:
-            # Get all policy versions
-            policy_versions = iam_client.list_policy_versions(
-                PolicyArn=policy_arn
-            )['Versions']
-            
-            # Find non-default versions
-            non_default_versions = [v for v in policy_versions if not v.get('IsDefaultVersion')]
-            
-            # If there are any non-default versions, delete the oldest one
-            if non_default_versions:
-                # Sort by create date (oldest first)
-                non_default_versions.sort(key=lambda x: x['CreateDate'])
-                oldest_version = non_default_versions[0]
-                
-                print(f"Deleting policy version: {oldest_version['VersionId']}")
-                iam_client.delete_policy_version(
-                    PolicyArn=policy_arn,
-                    VersionId=oldest_version['VersionId']
-                )
-            
-            # Create new policy version
-            iam_client.create_policy_version(
-                PolicyArn=policy_arn,
-                PolicyDocument=json.dumps(policy_document),
-                SetAsDefault=True
-            )
-            print("Updated existing scheduler policy")
-            
-        except Exception as e:
-            print(f"Warning: Failed to update policy version: {str(e)}")
-            print("Continuing with existing policy")
-    
-    # Attach policy to task role
-    try:
-        iam_client.attach_role_policy(
-            RoleName=task_role_name,
-            PolicyArn=policy_arn
-        )
-        print("Attached scheduler policy to task role")
-    except iam_client.exceptions.EntityAlreadyExistsException:
-        print("Scheduler policy already attached to task role")
-
-###############################################################################
-
 def _delete_scheduled_jobs(region: str, env_name: str) -> None:
     """
     Delete all scheduled jobs created by CloudRun.
@@ -972,19 +774,27 @@ def _delete_scheduled_jobs(region: str, env_name: str) -> None:
     events = boto3.client('events', region_name=region)
     lambda_client = boto3.client('lambda', region_name=region)
     
+    # Construct the expected Lambda function name
+    lambda_function_name = f'cloudrun-scheduler-{env_name}'
+    
     # Try to find all EventBridge rules with 'cloudrun-' in their name
     # This is a more general approach that doesn't depend on the Lambda function existing
     try:
         # List all rules first
         all_rules = events.list_rules()['Rules']
-        cloudrun_rules = [rule for rule in all_rules if 'cloudrun-' in rule['Name'].lower()]
+        # Filter for rules potentially related to this environment
+        env_prefix = f'cloudrun-{env_name}-'
+        cloudrun_rules = [rule for rule in all_rules if rule['Name'].startswith(env_prefix)]
         
         # If we found any cloudrun rules, delete them
         deleted_count = 0
+        processed_rule_names = set() # Keep track of rules already handled
+
         for rule in cloudrun_rules:
             rule_name = rule['Name']
+            processed_rule_names.add(rule_name)
             # Don't expose the prefix in the logs
-            display_name = rule_name[9:] if rule_name.startswith('cloudrun-') else rule_name
+            display_name = rule_name[len(env_prefix):]
             print(f"Found scheduled job: {display_name}")
             
             try:
@@ -1009,10 +819,10 @@ def _delete_scheduled_jobs(region: str, env_name: str) -> None:
             except Exception as e:
                 print(f"Error deleting job {display_name}: {str(e)}")
                 
-        # Now also try the original approach to catch any rules that don't have 'cloudrun' in name
-        # but are targeting our Lambda function
+        # Now also try the original approach to catch any rules targeting our Lambda function
+        # that might have been missed by the naming convention (less likely now)
         try:
-            lambda_function = lambda_client.get_function(FunctionName='cloudrun-scheduler')
+            lambda_function = lambda_client.get_function(FunctionName=lambda_function_name)
             lambda_arn = lambda_function['Configuration']['FunctionArn']
             
             # List all rules that might not have been caught by the previous filter
@@ -1021,7 +831,7 @@ def _delete_scheduled_jobs(region: str, env_name: str) -> None:
             for rule in remaining_rules:
                 rule_name = rule['Name']
                 # Skip rules we already processed
-                if rule in cloudrun_rules:
+                if rule_name in processed_rule_names:
                     continue
                     
                 try:
@@ -1029,9 +839,10 @@ def _delete_scheduled_jobs(region: str, env_name: str) -> None:
                     for target in targets:
                         if target['Arn'] == lambda_arn:
                             # Found a target pointing to our Lambda function
-                            # Don't expose the prefix in the logs
-                            display_name = rule_name[9:] if rule_name.startswith('cloudrun-') else rule_name
-                            
+                            display_name = rule_name
+                            if rule_name.startswith(env_prefix):
+                                display_name = rule_name[len(env_prefix):]
+
                             # Remove the target
                             events.remove_targets(
                                 Rule=rule_name,
@@ -1043,16 +854,18 @@ def _delete_scheduled_jobs(region: str, env_name: str) -> None:
                                 Name=rule_name
                             )
                             
-                            print(f"Deleted job: {display_name}")
+                            print(f"Deleted job (found via Lambda target): {display_name}")
                             deleted_count += 1
-                            break
+                            processed_rule_names.add(rule_name) # Mark as processed
+                            break # Move to the next rule
                 except Exception as e:
-                    # Don't expose the prefix in the logs
-                    display_name = rule_name[9:] if rule_name.startswith('cloudrun-') else rule_name
+                    display_name = rule_name
+                    if rule_name.startswith(env_prefix):
+                        display_name = rule_name[len(env_prefix):]
                     print(f"Error checking targets for job {display_name}: {str(e)}")
                     
         except lambda_client.exceptions.ResourceNotFoundException:
-            print("Scheduler Lambda function not found, skipping Lambda-target specific cleanup")
+            print(f"Scheduler Lambda function '{lambda_function_name}' not found, skipping Lambda-target specific cleanup")
             
         if deleted_count > 0:
             print(f"Deleted {deleted_count} scheduled jobs")
@@ -1199,12 +1012,9 @@ def create_infrastructure(env_name: str = 'default', region: str = None, **kwarg
     set_ecr_repo(ecr_repo, env_name)
 
     # Create a scheduled job Lambda function with environment name
-    lambda_function = _create_scheduler_lambda(aws_clients['iam'], task_role['Role']['Arn'], region, env_name)
+    lambda_function = _create_scheduler_lambda(aws_clients['iam'], region, env_name)
     set_scheduler_lambda_arn(lambda_function['Configuration']['FunctionArn'], env_name)
     
-    # Attach scheduler policies to task role
-    _attach_scheduler_policies(aws_clients['iam'], f'cloudrun-task-role-{env_name}')
-
     # Build and push Docker image
     _build_and_push_docker_image(ecr_repo, region, os.path.dirname(os.path.abspath(__file__)), os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docker'), **kwargs)
 
