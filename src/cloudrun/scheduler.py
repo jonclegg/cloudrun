@@ -31,6 +31,13 @@ def _get_s3_client(env_name: str = 'default'):
 
 ###############################################################################
 
+def _get_lambda_client(env_name: str = 'default'):
+    """Get a boto3 Lambda client with the configured region."""
+    region = get_region(env_name)
+    return boto3.client('lambda', region_name=region)
+
+###############################################################################
+
 def _get_cloudrun_lambda_target(env_name: str = 'default'):
     """Get the ARN of the CloudRun executor Lambda function."""
     lambda_arn = get_scheduler_lambda_arn(env_name)
@@ -178,6 +185,11 @@ def create_scheduled_job(
         }
         
     except ClientError as e:
+        # Clean up if rule creation succeeded but target adding failed
+        try:
+            events_client.delete_rule(Name=rule_name)
+        except ClientError:
+             pass # Ignore error during cleanup
         raise RuntimeError(f"Failed to create scheduled job: {str(e)}")
 
 ###############################################################################
@@ -195,35 +207,38 @@ def list_scheduled_jobs(env_name: str = 'default') -> List[Dict[str, Any]]:
     events_client = _get_events_client(env_name)
     
     try:
-        response = events_client.list_rules(
-            NamePrefix=f'cloudrun-{env_name}-'
-        )
-        
+        paginator = events_client.get_paginator('list_rules')
         jobs = []
-        for rule in response.get('Rules', []):
-            # Get targets for the rule
-            targets = events_client.list_targets_by_rule(
-                Rule=rule['Name']
-            ).get('Targets', [])
-            
-            if targets:
-                target_input = json.loads(targets[0]['Input'])
-                job_info = {
-                    'name': rule['Name'].replace(f'cloudrun-{env_name}-', ''),
-                    'environment': env_name,
-                    'rule_arn': rule['Arn'],
-                    'schedule': rule['ScheduleExpression'].replace('cron(', '').replace(')', ''),
-                    'script_path': target_input.get('script_path'),
-                    'vcpus': target_input.get('vcpus'),
-                    'memory': target_input.get('memory'),
-                    'use_spot': target_input.get('use_spot'),
-                    'method_name': target_input.get('method_name'),
-                    'params': target_input.get('params'),
-                    'zip_key': target_input.get('zip_key')
-                }
-                
-                jobs.append(job_info)
-        
+        for page in paginator.paginate(NamePrefix=f'cloudrun-{env_name}-'):
+            for rule in page.get('Rules', []):
+                # Get targets for the rule
+                targets_response = events_client.list_targets_by_rule(Rule=rule['Name'])
+                targets = targets_response.get('Targets', [])
+
+                if targets:
+                    target_input_str = targets[0].get('Input', '{}')
+                    try:
+                        target_input = json.loads(target_input_str)
+                    except json.JSONDecodeError:
+                        print(f"Warning: Could not decode JSON input for rule {rule['Name']}: {target_input_str}")
+                        target_input = {} # Assign empty dict if JSON is invalid
+
+                    job_info = {
+                        'name': rule['Name'].replace(f'cloudrun-{env_name}-', ''),
+                        'environment': env_name,
+                        'rule_arn': rule['Arn'],
+                        'schedule': rule.get('ScheduleExpression', '').replace('cron(', '').replace(')', ''),
+                        'script_path': target_input.get('script_path'),
+                        'vcpus': target_input.get('vcpus'),
+                        'memory': target_input.get('memory'),
+                        'use_spot': target_input.get('use_spot'),
+                        'method_name': target_input.get('method_name'),
+                        'params': target_input.get('params'),
+                        'zip_key': target_input.get('zip_key')
+                    }
+
+                    jobs.append(job_info)
+
         return jobs
         
     except ClientError as e:
@@ -249,15 +264,103 @@ def delete_scheduled_job(name: str, env_name: str = 'default') -> None:
         ).get('Targets', [])
         
         if targets:
-            events_client.remove_targets(
-                Rule=rule_name,
-                Ids=[target['Id'] for target in targets]
-            )
+            target_ids = [target['Id'] for target in targets]
+            if target_ids: # Ensure we have IDs before calling remove_targets
+                 events_client.remove_targets(
+                    Rule=rule_name,
+                    Ids=target_ids,
+                    Force=True # Use Force=True to allow deletion even if the rule is managed by another service
+                )
         
         # Delete the rule
         events_client.delete_rule(
-            Name=rule_name
+            Name=rule_name,
+            Force=True # Use Force=True here as well for consistency
         )
+        print(f"Successfully deleted scheduled job '{name}' in environment '{env_name}'.")
         
+    except events_client.exceptions.ResourceNotFoundException:
+         print(f"Scheduled job '{name}' not found in environment '{env_name}'.")
+         # Don't raise an error if the job is already deleted or doesn't exist
+
     except ClientError as e:
-        raise RuntimeError(f"Failed to delete scheduled job: {str(e)}") 
+        raise RuntimeError(f"Failed to delete scheduled job '{name}': {str(e)}")
+
+###############################################################################
+
+def run_scheduled_job_now(name: str, env_name: str = 'default') -> Dict[str, Any]:
+    """
+    Manually triggers the target (Lambda function) of a scheduled job immediately.
+
+    Args:
+        name: Name of the scheduled job to run.
+        env_name: Name of the environment (default: 'default').
+
+    Returns:
+        Dict[str, Any]: Response from the Lambda invocation.
+
+    Raises:
+        RuntimeError: If the job or its target cannot be found, or if the Lambda invocation fails.
+    """
+    events_client = _get_events_client(env_name)
+    lambda_client = _get_lambda_client(env_name)
+    rule_name = f'cloudrun-{env_name}-{name}'
+
+    try:
+        # 1. Find the target associated with the rule
+        targets_response = events_client.list_targets_by_rule(Rule=rule_name)
+        targets = targets_response.get('Targets', [])
+
+        if not targets:
+            raise RuntimeError(f"No targets found for scheduled job rule '{rule_name}'. Cannot invoke.")
+
+        # Assuming the first target is the correct one (as set up by create_scheduled_job)
+        target = targets[0]
+        target_arn = target.get('Arn')
+        target_input_str = target.get('Input', '{}')
+
+        if not target_arn:
+             raise RuntimeError(f"Target for rule '{rule_name}' does not have an ARN.")
+
+        # Ensure the target is the expected Lambda function
+        expected_lambda_arn = _get_cloudrun_lambda_target(env_name)
+        if target_arn != expected_lambda_arn:
+             print(f"Warning: Target ARN '{target_arn}' does not match expected scheduler Lambda ARN '{expected_lambda_arn}'. Proceeding anyway.")
+             # Decide if you want to raise an error here or just warn
+
+        # 2. Invoke the Lambda function directly
+        print(f"Invoking Lambda function '{target_arn}' with input: {target_input_str}")
+        try:
+            invocation_response = lambda_client.invoke(
+                FunctionName=target_arn,
+                InvocationType='RequestResponse',  # Synchronous invocation
+                Payload=target_input_str.encode('utf-8') # Payload must be bytes
+            )
+
+            # Decode the response payload
+            response_payload_bytes = invocation_response['Payload'].read()
+            response_payload = json.loads(response_payload_bytes.decode('utf-8'))
+
+            if invocation_response.get('FunctionError'):
+                 # Handle Lambda execution errors (errors raised within the Lambda code)
+                 error_details = response_payload # Payload contains error details in this case
+                 raise RuntimeError(f"Lambda function execution failed for job '{name}'. Error: {json.dumps(error_details)}")
+
+            print(f"Lambda invocation successful for job '{name}'. Response status: {invocation_response['StatusCode']}")
+            return {
+                'statusCode': invocation_response['StatusCode'],
+                'payload': response_payload
+            }
+
+        except ClientError as e:
+             raise RuntimeError(f"Failed to invoke Lambda function '{target_arn}' for job '{name}': {str(e)}")
+        except json.JSONDecodeError as e:
+             # Handle cases where the Lambda response isn't valid JSON
+            raise RuntimeError(f"Failed to decode Lambda response payload for job '{name}': {str(e)}. Raw payload: {response_payload_bytes.decode('utf-8')}")
+
+
+    except events_client.exceptions.ResourceNotFoundException:
+         raise RuntimeError(f"Scheduled job rule '{rule_name}' not found in environment '{env_name}'.")
+    except ClientError as e:
+        # Catch other potential Boto3 errors during target listing
+        raise RuntimeError(f"Failed to retrieve target for scheduled job '{name}': {str(e)}") 

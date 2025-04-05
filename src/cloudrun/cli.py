@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from botocore.exceptions import ClientError
 from .infrastructure import create_infrastructure
 from .infrastructure import destroy_infrastructure
-from .scheduler import create_scheduled_job, list_scheduled_jobs, delete_scheduled_job
+from .scheduler import create_scheduled_job, list_scheduled_jobs, delete_scheduled_job, run_scheduled_job_now
 from cloudrun.dynamo_config import (
     get_cluster_name,
     list_environments,
@@ -365,44 +365,63 @@ def create_job(file_method_path, name, schedule_expression, description, vcpus, 
         sys.exit(1)
 
 @schedule.command(name='list')
-def list_jobs():
+@click.option('--env', default='default', help='Environment name (default: default)')
+def list_jobs(env):
     """List all scheduled jobs."""
     try:
-        jobs = list_scheduled_jobs()
-        
+        jobs = list_scheduled_jobs(env_name=env)
         if not jobs:
-            click.echo("No scheduled jobs found.")
+            click.echo(f"No scheduled jobs found in environment '{env}'.")
             return
             
-        click.echo("\nScheduled Jobs:")
-        click.echo("=" * 80)
-        
+        click.echo(f"Scheduled jobs in environment '{env}':")
+        # Simple print for now, consider more formatting (e.g., table)
         for job in jobs:
-            name = job['Name']
-            click.echo(f"Name: {name}")
-            click.echo(f"Description: {job['Description']}")
-            click.echo(f"Schedule: {job['ScheduleExpression']}")
-            click.echo(f"State: {job['State']}")
-            click.echo(f"ARN: {job['Arn']}")
-            click.echo("=" * 80)
+            click.echo(f"- Name: {job['name']}")
+            click.echo(f"  Schedule: {job['schedule']}")
+            click.echo(f"  State: {job.get('state', 'N/A')}") # Include state if available
+            click.echo(f"  Method: {job.get('full_method_name', job.get('method_name', 'N/A'))}") # Show full path if possible
+            click.echo(f"  Params: {json.dumps(job.get('params')) if job.get('params') else 'None'}")
+            click.echo("-" * 10)
             
-    except Exception as e:
-        click.echo(f"Error listing jobs: {str(e)}", err=True)
-        sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error listing scheduled jobs: {e}", err=True)
 
 @schedule.command(name='delete')
 @click.option('--name', required=True, help='Name of the scheduled job to delete')
-def delete_scheduled_job_command(name):
+@click.option('--env', default='default', help='Environment name (default: default)')
+def delete_scheduled_job_command(name, env):
     """Delete a scheduled job."""
     try:
-        if click.confirm(f'Are you sure you want to delete the scheduled job "{name}"?'):
-            delete_scheduled_job(name)
-            click.echo(f"\nJob '{name}' deleted successfully!")
+        if click.confirm(f'Are you sure you want to delete the scheduled job "{name}" in environment "{env}"?'):
+            # Pass env_name to the backend function
+            delete_scheduled_job(name=name, env_name=env)
+            click.echo(f"\nJob '{name}' in environment '{env}' deleted successfully!")
         else:
             click.echo("\nOperation cancelled.")
             
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
+        click.echo(f"Error deleting job '{name}' in environment '{env}': {str(e)}", err=True)
+        sys.exit(1)
+
+@schedule.command(name='invoke')
+@click.argument('name', required=True)
+@click.option('--env', default='default', help='Environment name (default: default)')
+def invoke_job(name, env):
+    """Manually invoke a scheduled job to run immediately."""
+    try:
+        click.echo(f"Invoking job '{name}' in environment '{env}'...")
+        result = run_scheduled_job_now(name=name, env_name=env)
+        click.echo("Invocation successful!")
+        click.echo(f"Status Code: {result.get('statusCode')}")
+        # Optionally print the payload, might be large
+        click.echo(f"Response Payload: {json.dumps(result.get('payload'), indent=2)}")
+
+    except (ValueError, RuntimeError) as e:
+        click.echo(f"Error invoking job '{name}' in environment '{env}': {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"An unexpected error occurred: {e}", err=True)
         sys.exit(1)
 
 @cli.group()
