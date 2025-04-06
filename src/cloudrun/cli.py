@@ -1,16 +1,33 @@
 import argparse
+from datetime import datetime
 import sys
 import time
 import boto3
 import json
 from typing import Optional, List, Dict, Any
-
-import click
+from botocore.exceptions import ClientError
 import cloudrun._infrastructure as _infrastructure
+
+def get_log_streams(logs_client: boto3.client, log_group: str, stream_prefix: Optional[str] = None) -> List[Dict]:
+    """Get all log streams for a given log group, optionally filtered by prefix."""
+    kwargs = {
+        'logGroupName': log_group,
+        'orderBy': 'LastEventTime',
+        'descending': True
+    }
+    
+    if stream_prefix:
+        kwargs['logStreamNamePrefix'] = stream_prefix
+        
+    streams = logs_client.describe_log_streams(**kwargs)
+    return streams['logStreams']
+
+###############################################################################
 
 def tail_logs(
     task_id: Optional[str] = None,
-    start_time: Optional[int] = None
+    start_time: Optional[int] = None,
+    region: str = 'us-east-1'
 ) -> None:
     """ 
     Continuously tail and display new logs from all streams in a log group.
@@ -23,7 +40,7 @@ def tail_logs(
         start_time: Optional start time in milliseconds since epoch
         print_stream_name: Whether to print the stream name in log output
     """
-    click.echo("\nTailing logs... (Press Ctrl+C to stop)")
+    print("\nTailing logs... (Press Ctrl+C to stop)")
     
     # Set start time to now if not provided
     if start_time is None:
@@ -32,6 +49,7 @@ def tail_logs(
     # Cache to track seen events and avoid duplicates
     seen_events = {}
     
+    logs_client = boto3.client('logs', region_name=region)
     # Function to fetch and return new events
     def fetch_events():
         nonlocal start_time
@@ -45,16 +63,17 @@ def tail_logs(
         }
         
         # If task_id is provided, get matching stream names
+
         if task_id:
             try:
                 streams = get_log_streams(logs_client, log_group, task_id)
                 if not streams:
-                    click.echo(f"No streams found for task ID: {task_id}")
+                    print(f"No streams found for task ID: {task_id}")
                     return []
                 params['logStreamNames'] = [s['logStreamName'] for s in streams]
             except ClientError as e:
                 if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                    click.echo(f"Log group not found: {log_group}")
+                    print(f"Log group not found: {log_group}")
                     return []
                 raise
         
@@ -81,15 +100,15 @@ def tail_logs(
         except ClientError as e:
             if e.response['Error']['Code'] == 'ThrottlingException':
                 # If we hit API rate limits, wait and retry
-                click.echo("Rate limit exceeded, retrying after short delay...", err=True)
+                print("Rate limit exceeded, retrying after short delay...", err=True)
                 time.sleep(1)
                 return fetch_events()
             elif e.response['Error']['Code'] == 'ResourceNotFoundException':
-                click.echo(f"Log group not found: {log_group}")
+                print(f"Log group not found: {log_group}")
                 return []
             else:
                 # For other errors, report and continue
-                click.echo(f"Error fetching logs: {str(e)}", err=True)
+                print(f"Error fetching logs: {str(e)}", err=True)
                 return []
                 
         return new_events
@@ -99,11 +118,7 @@ def tail_logs(
         timestamp = datetime.fromtimestamp(event['timestamp'] / 1000)
         message = event['message'].strip()
         
-        if print_stream_name:
-            stream_name = event.get('logStreamName', 'unknown')
-            click.echo(f"{timestamp} - [{stream_name}] - {message}")
-        else:
-            click.echo(f"{timestamp} - {message}")
+        print(f"{timestamp} - {message}")
     
     # Main polling loop
     has_displayed_waiting_message = False
@@ -125,11 +140,11 @@ def tail_logs(
             time.sleep(2)
             
     except KeyboardInterrupt:
-        click.echo("\nStopped tailing logs")
+        print("\nStopped tailing logs")
     except Exception as e:
-        click.echo(f"Error while tailing logs: {str(e)}", err=True)
+        print(f"Error while tailing logs: {str(e)}", err=True)
 
-
+###############################################################################
 
 def format_table(headers, rows):
     """
@@ -309,6 +324,9 @@ def delete_task_command(args):
         
     delete_task(args.task_id, args.region)
 
+def tail_logs_command(args):
+    """Handler for tail-logs command"""
+    tail_logs(args.task_id, args.region)
 
 def main():
     parser = argparse.ArgumentParser(description="CloudRun Command Line Interface")
@@ -319,6 +337,11 @@ def main():
     # List tasks command
     list_parser = subparsers.add_parser('list-tasks', help='List all tasks')
     list_parser.set_defaults(func=list_tasks_command)
+    
+    # Tail logs command
+    tail_parser = subparsers.add_parser('tail-logs', help='Tail logs for a task')
+    tail_parser.add_argument('task_id', help='ID of the task to tail logs for')
+    tail_parser.set_defaults(func=tail_logs_command)
     
     # Delete task command
     delete_parser = subparsers.add_parser('delete-task', help='Delete a running task')
