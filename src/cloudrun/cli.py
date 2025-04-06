@@ -1,9 +1,137 @@
 import argparse
 import sys
+import time
 import boto3
 import json
 from typing import Optional, List, Dict, Any
+
+import click
 import cloudrun._infrastructure as _infrastructure
+
+def tail_logs(
+    task_id: Optional[str] = None,
+    start_time: Optional[int] = None
+) -> None:
+    """ 
+    Continuously tail and display new logs from all streams in a log group.
+    
+    Args:
+        logs_client: Boto3 CloudWatch logs client
+        log_group: The CloudWatch log group name
+        filter_pattern: Optional CloudWatch filter pattern
+        task_id: Optional task ID to filter logs by (used as stream prefix)
+        start_time: Optional start time in milliseconds since epoch
+        print_stream_name: Whether to print the stream name in log output
+    """
+    click.echo("\nTailing logs... (Press Ctrl+C to stop)")
+    
+    # Set start time to now if not provided
+    if start_time is None:
+        start_time = int(time.time() * 1000)
+    
+    # Cache to track seen events and avoid duplicates
+    seen_events = {}
+    
+    # Function to fetch and return new events
+    def fetch_events():
+        nonlocal start_time
+        
+        # Build parameters for filter_log_events
+        log_group = _infrastructure.get_log_group()
+        params = {
+            'logGroupName': log_group,
+            'startTime': start_time,
+            'interleaved': True  # Interleave events from different streams
+        }
+        
+        if filter_pattern:
+            params['filterPattern'] = filter_pattern
+            
+        # If task_id is provided, get matching stream names
+        if task_id:
+            try:
+                streams = get_log_streams(logs_client, log_group, task_id)
+                if not streams:
+                    click.echo(f"No streams found for task ID: {task_id}")
+                    return []
+                params['logStreamNames'] = [s['logStreamName'] for s in streams]
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                    click.echo(f"Log group not found: {log_group}")
+                    return []
+                raise
+        
+        # Collect new events
+        new_events = []
+        try:
+            # Use paginator to handle possible multiple pages of results
+            paginator = logs_client.get_paginator('filter_log_events')
+            for page in paginator.paginate(**params):
+                for event in page.get('events', []):
+                    # Skip if we've seen this event before
+                    event_id = event['eventId']
+                    if event_id in seen_events:
+                        continue
+                        
+                    # Update seen events and track
+                    seen_events[event_id] = True
+                    new_events.append(event)
+                    
+                    # Update start time for next iteration (add 1ms to avoid duplicates)
+                    timestamp = event['timestamp']
+                    if timestamp >= start_time:
+                        start_time = timestamp + 1
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ThrottlingException':
+                # If we hit API rate limits, wait and retry
+                click.echo("Rate limit exceeded, retrying after short delay...", err=True)
+                time.sleep(1)
+                return fetch_events()
+            elif e.response['Error']['Code'] == 'ResourceNotFoundException':
+                click.echo(f"Log group not found: {log_group}")
+                return []
+            else:
+                # For other errors, report and continue
+                click.echo(f"Error fetching logs: {str(e)}", err=True)
+                return []
+                
+        return new_events
+    
+    # Function to format and display a log event
+    def display_event(event):
+        timestamp = datetime.fromtimestamp(event['timestamp'] / 1000)
+        message = event['message'].strip()
+        
+        if print_stream_name:
+            stream_name = event.get('logStreamName', 'unknown')
+            click.echo(f"{timestamp} - [{stream_name}] - {message}")
+        else:
+            click.echo(f"{timestamp} - {message}")
+    
+    # Main polling loop
+    has_displayed_waiting_message = False
+    try:
+        while True:
+            events = fetch_events()
+            
+            if events:
+                has_displayed_waiting_message = False
+                # Sort events by timestamp for chronological order
+                events.sort(key=lambda x: x['timestamp'])
+                for event in events:
+                    display_event(event)
+            elif not has_displayed_waiting_message:
+                # click.echo("Waiting for new logs...")
+                has_displayed_waiting_message = True
+                
+            # Wait before polling again
+            time.sleep(2)
+            
+    except KeyboardInterrupt:
+        click.echo("\nStopped tailing logs")
+    except Exception as e:
+        click.echo(f"Error while tailing logs: {str(e)}", err=True)
+
 
 
 def format_table(headers, rows):
