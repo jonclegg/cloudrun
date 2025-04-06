@@ -44,9 +44,6 @@ def tail_logs(
             'interleaved': True  # Interleave events from different streams
         }
         
-        if filter_pattern:
-            params['filterPattern'] = filter_pattern
-            
         # If task_id is provided, get matching stream names
         if task_id:
             try:
