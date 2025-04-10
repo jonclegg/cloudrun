@@ -151,6 +151,7 @@ def get_default_vpc_and_subnet(region: str) -> tuple:
 
 def run_ecs_task(
     script_path: str,
+    method_name: str,
     s3_key: str,
     **kwargs
 ) -> str:
@@ -182,20 +183,14 @@ def run_ecs_task(
         _, subnet_id = get_default_vpc_and_subnet(region)
 
     task_definition_arn = _infrastructure.get_task_definition_arn(region)
+    vcpus = kwargs.get('vcpus', 0.25)
     cpu_units = str(int(vcpus * 1024))
     memory = kwargs.get('memory', 512)
-    vcpus = kwargs.get('vcpus', 0.25)
     validate_cpu_memory(vcpus, memory)
 
-    command = [bucket_name, s3_key, script_path]
-    method_name = kwargs.get('method_name', None)
     params = kwargs.get('params', None)
+    command = [bucket_name, s3_key, script_path, method_name, json.dumps(params)]
 
-    if method_name:
-        command.append(method_name)
-    if params:
-        command.append(json.dumps(params))
-    
     task_params = {
         'cluster': _infrastructure.get_cluster_name(),
         'taskDefinition': task_definition_arn,
@@ -257,6 +252,8 @@ def run(
         ValueError: If invalid vcpus or memory values are provided
     """
     
+    # _infrastructure.create_infrastructure(**kwargs)
+
     # Parse script path to determine if it's a module.method
     if not '.' in script_path:
         raise ValueError("Script path must be a module.method (e.g. 'main.my_method')")
@@ -272,9 +269,10 @@ def run(
 
     exclude_paths = kwargs.get('exclude_paths', None)
     verbose = kwargs.get('verbose', False)
-    
-    s3_key = create_and_upload_zip(script_path, exclude_paths, verbose)
-    return run_ecs_task(script_path, s3_key, **kwargs)
+    region = kwargs.get('region', 'us-east-1')
+
+    s3_key = create_and_upload_zip(region, script_path, exclude_paths, verbose)
+    return run_ecs_task(script_path, method_name, s3_key, **kwargs)
 
 ###############################################################################
 

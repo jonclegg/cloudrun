@@ -74,7 +74,7 @@ EOL
     MODULE_PATH=$(echo "$SCRIPT_PATH" | sed 's/\.py$//' | tr '/' '.')
     
     # Run the wrapper script
-    echo "Running method: ${MODULE_PATH}.${METHOD_NAME}"
+    echo "Running method: ${MODULE_PATH}.${METHOD_NAME} with params: ${PARAMS_JSON}"
     python run_method.py "$MODULE_PATH" "$METHOD_NAME" "$PARAMS_JSON"
 else
     # Run the specified Python script

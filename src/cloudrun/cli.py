@@ -8,16 +8,21 @@ from typing import Optional, List, Dict, Any
 from botocore.exceptions import ClientError
 import cloudrun._infrastructure as _infrastructure
 
+###############################################################################
 def get_log_streams(logs_client: boto3.client, log_group: str, stream_prefix: Optional[str] = None) -> List[Dict]:
     """Get all log streams for a given log group, optionally filtered by prefix."""
+    # print(f"Getting log streams for {log_group} with prefix {stream_prefix}")
+
     kwargs = {
         'logGroupName': log_group,
-        'orderBy': 'LastEventTime',
-        'descending': True
     }
     
     if stream_prefix:
         kwargs['logStreamNamePrefix'] = stream_prefix
+    else:
+        # Only use ordering when not filtering by prefix
+        kwargs['orderBy'] = 'LastEventTime'
+        kwargs['descending'] = True
         
     streams = logs_client.describe_log_streams(**kwargs)
     return streams['logStreams']
@@ -26,7 +31,7 @@ def get_log_streams(logs_client: boto3.client, log_group: str, stream_prefix: Op
 
 def tail_logs(
     task_id: Optional[str] = None,
-    start_time: Optional[int] = None,
+    hours_back: Optional[int] = None,
     region: str = 'us-east-1'
 ) -> None:
     """ 
@@ -43,7 +48,10 @@ def tail_logs(
     print("\nTailing logs... (Press Ctrl+C to stop)")
     
     # Set start time to now if not provided
-    if start_time is None:
+    if hours_back is not None:
+        # Convert hours to milliseconds and subtract from current time
+        start_time = int(time.time() * 1000) - (hours_back * 60 * 60 * 1000)
+    else:
         start_time = int(time.time() * 1000)
     
     # Cache to track seen events and avoid duplicates
@@ -66,7 +74,8 @@ def tail_logs(
 
         if task_id:
             try:
-                streams = get_log_streams(logs_client, log_group, task_id)
+                prefix = f"ecs/cloudrun-executor/{task_id}"
+                streams = get_log_streams(logs_client, log_group, prefix)
                 if not streams:
                     print(f"No streams found for task ID: {task_id}")
                     return []
@@ -100,7 +109,7 @@ def tail_logs(
         except ClientError as e:
             if e.response['Error']['Code'] == 'ThrottlingException':
                 # If we hit API rate limits, wait and retry
-                print("Rate limit exceeded, retrying after short delay...", err=True)
+                print("Rate limit exceeded, retrying after short delay...", file=sys.stderr)
                 time.sleep(1)
                 return fetch_events()
             elif e.response['Error']['Code'] == 'ResourceNotFoundException':
@@ -108,7 +117,7 @@ def tail_logs(
                 return []
             else:
                 # For other errors, report and continue
-                print(f"Error fetching logs: {str(e)}", err=True)
+                print(f"Error fetching logs: {str(e)}", file=sys.stderr)
                 return []
                 
         return new_events
@@ -142,7 +151,7 @@ def tail_logs(
     except KeyboardInterrupt:
         print("\nStopped tailing logs")
     except Exception as e:
-        print(f"Error while tailing logs: {str(e)}", err=True)
+        print(f"Error while tailing logs: {str(e)}", file=sys.stderr)
 
 ###############################################################################
 
@@ -179,7 +188,7 @@ def format_table(headers, rows):
     table = [header_row, separator] + data_rows
     return "\n".join(table)
 
-
+###############################################################################
 def get_tasks(region: str) -> List[Dict[str, Any]]:
     """
     Get all running tasks in the CloudRun cluster.
@@ -246,7 +255,7 @@ def get_tasks(region: str) -> List[Dict[str, Any]]:
         print(f"Error retrieving tasks: {str(e)}")
         return []
 
-
+###############################################################################
 def delete_task(task_id: str, region: str) -> bool:
     """
     Delete (stop) a running ECS task by ID.
@@ -292,7 +301,7 @@ def delete_task(task_id: str, region: str) -> bool:
         print(f"Error stopping task: {str(e)}")
         return False
 
-
+###############################################################################
 def list_tasks_command(args):
     """Handler for list-tasks command"""
     tasks = get_tasks(args.region)
@@ -315,7 +324,7 @@ def list_tasks_command(args):
     headers = ["Task ID", "Status", "Script", "Created At"]
     print(format_table(headers, table_data))
 
-
+###############################################################################
 def delete_task_command(args):
     """Handler for delete-task command"""
     if not args.task_id:
@@ -324,9 +333,13 @@ def delete_task_command(args):
         
     delete_task(args.task_id, args.region)
 
+###############################################################################
+
 def tail_logs_command(args):
     """Handler for tail-logs command"""
-    tail_logs(args.task_id, args.region)
+    tail_logs(args.task_id, args.hours_back, args.region)
+
+###############################################################################
 
 def main():
     parser = argparse.ArgumentParser(description="CloudRun Command Line Interface")
@@ -341,6 +354,7 @@ def main():
     # Tail logs command
     tail_parser = subparsers.add_parser('tail-logs', help='Tail logs for a task')
     tail_parser.add_argument('task_id', help='ID of the task to tail logs for')
+    tail_parser.add_argument('--hours-back', type=int, help='Number of hours to look back for logs')
     tail_parser.set_defaults(func=tail_logs_command)
     
     # Delete task command
@@ -356,6 +370,7 @@ def main():
         
     args.func(args)
 
+###############################################################################
 
 if __name__ == "__main__":
     main()
