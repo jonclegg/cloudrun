@@ -27,8 +27,11 @@ cloudrun = "cloudrun.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["cloudrun*"]
+include = ["cloudrun*", "cloudrun.docker*"]
 namespaces = false
+
+[tool.setuptools.package-data]
+cloudrun = ["_infrastructure.py", "docker/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
